@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+domain = { path = "crates/domain" }
+domain-macros = { path = "crates/domain-macros" }
+domain-memory = { path = "crates/domain-memory" }
+domain-story = { path = "crates/domain-story" }

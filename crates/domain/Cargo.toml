@@ -1,0 +1,9 @@
+[package]
+name = "domain"
+description = "Commands, aggregates and events: the core of an Alchemy Domain style model."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain-macros.workspace = true

@@ -74,7 +74,7 @@ Step `at` from 1 to the version to scrub through an account's history.
 Telemetry shows everything, whoever may read it, so a server serves it only to the connections you allow:
 
 ```rust
-Server::<BankApi>::new(memory)
+Server::<BankApi>::new(bank)
     .sessions(|token| users.check(token))
     .telemetry(|user: Option<&User>| user.is_some_and(|u| u.is_staff()))
     .listen("0.0.0.0:7878")?;

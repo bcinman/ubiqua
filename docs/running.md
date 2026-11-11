@@ -96,18 +96,26 @@ Envelope {
 bank.append(&sam, [AccountOpened { owner: "sam".into() }]);   // no decide; evolve runs
 ```
 
-## Share between threads
+## One thread changes it
+
+An app or a server hands its `Memory` to a `Runtime`. Its thread makes every change: commands, views, policies, schedules and the store's writes. Everything else sends it jobs:
 
 ```rust
-let bank = Arc::new(Memory::new());
+let bank = Runtime::spawn(Memory::new().with::<Bank>());   // Clone to share
+let client = Client::<BankApi>::in_process(bank.clone());
+let server = Server::<BankApi>::new(bank.clone()).listen("0.0.0.0:7878")?;
 
-for _ in 0..8 {
-    let bank = bank.clone();
-    std::thread::spawn(move || bank.send(&sam, DepositMoney { amount: 1 }));
-}
+bank.exec(|memory| memory.send(&sam, DepositMoney { amount: 1 }), |sent| show(sent));
+let events = bank.call(|memory| memory.events(&sam))?;    // waits; for tests and scripts
 ```
 
-Commands to one instance queue. Commands to different instances run in parallel.
+Reads don't queue: view readers and telemetry read from the caller's thread.
+
+The runtime runs the jobs that queued up together, as one batch. With [SQLite](storage.md), a batch is one transaction, so many commands reach the disk with one write. Each job's answer goes out once its batch is stored. If a batch can't be stored, the runtime answers `Unavailable` from then on: restart to carry on from what the file holds.
+
+`Runtime::inline(memory)` runs each job on the thread that hands it in, for tests and the web.
+
+`Memory` itself also works from several threads, as tests do: commands to one instance queue, and commands to different instances run in parallel.
 
 ## Keep it on disk
 
@@ -124,7 +132,7 @@ let bank = Arc::new(Memory::new().with::<Bank>().external(FraudCheck, Vendor)); 
 let next = bank.run_due();        // runs what's due; Some(when) to call it again
 ```
 
-`Client::in_process` calls it for you. See [Policies](policies.md#who-runs-them).
+A `Runtime` calls it for you. See [Policies](policies.md#who-runs-them).
 
 ## Set the clock
 

@@ -3,7 +3,7 @@
 An app talks to its model through a `Client`. It sends commands, reads views, and follows them live. It doesn't depend on any UI framework or async runtime.
 
 ```rust
-let client = Client::<BankApi>::in_process(Arc::new(Memory::new().with::<Bank>()));
+let client = Client::<BankApi>::in_process(Runtime::spawn(Memory::new().with::<Bank>()));
 
 let summary = client.view::<AccountSummary>().live(&sam);
 let _redraw = summary.on_change(|summary, _| redraw(summary));
@@ -49,8 +49,8 @@ error[E0277]: `BankApi` doesn't let clients read `AuditLog`
 
 | | Commands run on | Use it for |
 | --- | --- | --- |
-| `Client::in_process(memory)` | a thread of their own, in order | apps: the UI thread never waits |
-| `Client::inline(memory)` | the caller's thread | tests, scripts, the web |
+| `Client::in_process(Runtime::spawn(memory))` | the runtime's thread, in order | apps: the UI thread never waits |
+| `Client::in_process(Runtime::inline(memory))` | the caller's thread | tests, scripts, the web |
 | `Client::connect(url, token)` | the [server](server.md) | client/server, many users |
 
 ```rust
@@ -58,9 +58,9 @@ let me = client.acting_as(User("sam".into()));   // in process: who sends and re
 client.connection();                              // LiveView<Connection>: Connected, Reconnecting, ..
 ```
 
-[Policies](policies.md) and scheduled commands run on the domain thread too, between commands. With `inline`, call `Memory::run_due` for schedules.
+[Policies](policies.md) and scheduled commands run on the runtime's thread too, between commands. With `Runtime::inline`, call `Memory::run_due` for schedules.
 
-On the web there are no threads, so `in_process` behaves like `inline`.
+On the web there are no threads, so `Runtime::spawn` behaves like `Runtime::inline`. See [Running a model](running.md#one-thread-changes-it).
 
 ## Send
 

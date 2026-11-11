@@ -1,6 +1,6 @@
 use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, Reply, SendError, View, ViewCx};
 use domain_client::{Client, ReadError};
-use domain_memory::Memory;
+use domain_memory::{Memory, Runtime};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::task::{Context, Poll, Wake, Waker};
@@ -100,13 +100,13 @@ fn c(id: &str) -> CounterId {
     CounterId::new(id)
 }
 
-fn memory() -> Arc<Memory> {
-    Arc::new(Memory::new().with::<Counting>())
+fn memory() -> Memory {
+    Memory::new().with::<Counting>()
 }
 
 #[test]
 fn an_inline_client_resolves_sends_at_once() {
-    let client = Client::<CountingApi>::inline(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
     let receipt = client.send(&c("a"), Add { n: 2 }).try_get().unwrap().unwrap();
     assert_eq!((receipt.reply, receipt.version), (2, 1));
 
@@ -116,7 +116,7 @@ fn an_inline_client_resolves_sends_at_once() {
 
 #[test]
 fn an_in_process_client_runs_commands_on_its_domain_thread_in_order() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let (tx, rx) = mpsc::channel();
     for n in 1..=50 {
         let tx = tx.clone();
@@ -132,7 +132,7 @@ fn an_in_process_client_runs_commands_on_its_domain_thread_in_order() {
 
 #[test]
 fn a_pending_send_can_be_awaited_or_polled_each_frame() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let awaited = block_on(client.send(&c("a"), Add { n: 4 })).unwrap();
     assert_eq!(awaited.reply, 4);
 
@@ -151,7 +151,7 @@ fn a_pending_send_can_be_awaited_or_polled_each_frame() {
 
 #[test]
 fn a_command_that_panics_is_unavailable_and_the_domain_thread_keeps_going() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let error = block_on(client.send(&c("a"), Add { n: 666 })).unwrap_err();
     let SendError::Unavailable { command_id, reason } = error else { panic!("{error:?}") };
     assert!(reason.contains("Counter can't add 666"), "{reason}");
@@ -163,7 +163,7 @@ fn a_command_that_panics_is_unavailable_and_the_domain_thread_keeps_going() {
 
 #[test]
 fn a_command_whose_view_panics_still_commits_and_the_view_reports_it_is_behind() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let receipt = block_on(client.send(&c("a"), Add { n: -13 })).expect("committed");
     assert_eq!(receipt.reply, -13);
     let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.view::<Total>().get(&c("a")).try_get()));
@@ -172,7 +172,7 @@ fn a_command_whose_view_panics_still_commits_and_the_view_reports_it_is_behind()
 
 #[test]
 fn reads_see_a_receipt_once_the_view_applied_it() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let receipt = block_on(client.send(&c("a"), Add { n: 3 })).unwrap();
     let totals = client.view::<Total>();
     assert_eq!(block_on(totals.get_at_least(&c("a"), &receipt)), Ok(Some(3)));
@@ -187,7 +187,7 @@ fn reads_see_a_receipt_once_the_view_applied_it() {
 
 #[test]
 fn a_live_view_starts_at_the_state_now_and_follows_changes() {
-    let client = Client::<CountingApi>::inline(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
     client.send(&c("a"), Add { n: 2 });
     let live = client.view::<Total>().live(&c("a"));
     assert_eq!(*live.latest().0, Ok(Some(2)));
@@ -210,7 +210,7 @@ fn a_live_view_starts_at_the_state_now_and_follows_changes() {
 
 #[test]
 fn a_live_view_can_be_awaited_from_another_thread() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     let live = client.view::<Total>().live(&c("a"));
     let (_, seen) = live.latest();
     let waiting = {
@@ -225,14 +225,14 @@ fn a_live_view_can_be_awaited_from_another_thread() {
 
 #[test]
 fn a_panicking_callback_doesnt_stop_the_domain_thread() {
-    let client = Client::<CountingApi>::in_process(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
     client.send_then(&c("a"), Add { n: 1 }, |_| panic!("the UI's callback fails"));
     assert_eq!(block_on(client.send(&c("a"), Add { n: 1 })).unwrap().reply, 2);
 }
 
 #[test]
 fn callbacks_may_read_and_send_without_deadlocking() {
-    let client = Client::<CountingApi>::inline(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
     let live = client.view::<Total>().live(&c("a"));
     let reads = Arc::new(Mutex::new(Vec::new()));
     let (inner, me, log) = (client.clone(), live.clone(), reads.clone());
@@ -255,8 +255,8 @@ fn callbacks_may_read_and_send_without_deadlocking() {
 
 #[test]
 fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
-    let memory = memory();
-    let client = Client::<CountingApi>::inline(memory.clone());
+    let runtime = Runtime::inline(memory());
+    let client = Client::<CountingApi>::in_process(runtime.clone());
     let live = client.view::<Total>().live(&c("a"));
     let versions = Arc::new(Mutex::new(Vec::new()));
     let log = versions.clone();
@@ -264,7 +264,7 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
 
     let writers: Vec<_> = (0..8)
         .map(|_| {
-            let client = Client::<CountingApi>::inline(memory.clone());
+            let client = Client::<CountingApi>::in_process(runtime.clone());
             std::thread::spawn(move || {
                 for _ in 0..100 {
                     client.send(&c("a"), Add { n: 1 });
@@ -281,7 +281,7 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
 
 #[test]
 fn dropping_a_live_view_stops_its_updates() {
-    let client = Client::<CountingApi>::inline(memory());
+    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
     let live = client.view::<Total>().live(&c("a"));
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
@@ -340,11 +340,11 @@ impl domain_memory::React for PingBack {
 
 #[test]
 fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
-    let memory = Arc::new(Memory::new().with::<Counting>().policy(PingBack));
-    let client = Client::<CountingApi>::in_process(memory.clone());
+    let runtime = Runtime::spawn(Memory::new().with::<Counting>().policy(PingBack));
+    let client = Client::<CountingApi>::in_process(runtime.clone());
     client.send(&c("a"), Add { n: 1 });
 
-    let pings = || memory.events(&OtherId::new("a")).len();
+    let pings = || runtime.call(|m| m.events(&OtherId::new("a")).len()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while pings() < 2 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
@@ -354,10 +354,14 @@ fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
 
 #[test]
 fn an_inline_client_runs_policies_when_woken() {
-    let memory = Arc::new(Memory::new().with::<Counting>().policy(PingBack));
-    let client = Client::<CountingApi>::inline(memory.clone());
+    let runtime = Runtime::inline(Memory::new().with::<Counting>().policy(PingBack));
+    let client = Client::<CountingApi>::in_process(runtime.clone());
     client.send(&c("a"), Add { n: 1 }).try_get().unwrap().unwrap();
-    assert_eq!(memory.events(&OtherId::new("a")).len(), 1, "the policy ran; the schedule isn't due");
+    assert_eq!(
+        runtime.call(|m| m.events(&OtherId::new("a")).len()).unwrap(),
+        1,
+        "the policy ran; the schedule isn't due"
+    );
 }
 
 // An adapter that answers from another thread, as an HTTP client would.
@@ -418,13 +422,13 @@ impl domain_memory::React for CheckThenPing {
 
 #[test]
 fn a_call_answered_on_another_thread_wakes_the_domain_thread() {
-    let memory = Arc::new(Memory::new().with::<Counting>().policy(CheckThenPing).external(Slow, SlowAdapter));
-    let client = Client::<CountingApi>::in_process(memory.clone());
+    let runtime = Runtime::spawn(Memory::new().with::<Counting>().policy(CheckThenPing).external(Slow, SlowAdapter));
+    let client = Client::<CountingApi>::in_process(runtime.clone());
     client.send(&c("a"), Add { n: 1 });
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while memory.events(&OtherId::new("checked")).is_empty() && Instant::now() < deadline {
+    while runtime.call(|m| m.events(&OtherId::new("checked")).is_empty()).unwrap() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(memory.events(&OtherId::new("checked")).len(), 1);
+    assert_eq!(runtime.call(|m| m.events(&OtherId::new("checked")).len()).unwrap(), 1);
 }

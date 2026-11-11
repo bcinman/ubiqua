@@ -4,14 +4,14 @@
 use bank::*;
 use domain::{Cursor, Frame, SendError};
 use domain_client::{Client, ClientTls, Connection, Pending, ReadError};
-use domain_memory::Memory;
+use domain_memory::{Memory, Runtime};
 use domain_server::{Listening, Server};
 use domain_websocket::ServerTls;
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn serve(memory: &Arc<Memory>, addr: &str) -> Listening {
+fn serve(memory: &Runtime, addr: &str) -> Listening {
     // Only sam and kim may sign in; the token is their name.
     Server::<BankApi>::new(memory.clone())
         .sessions(|token| ["sam", "kim"].contains(&token).then(|| User(token.into())))
@@ -19,8 +19,8 @@ fn serve(memory: &Arc<Memory>, addr: &str) -> Listening {
         .unwrap()
 }
 
-fn bank() -> Arc<Memory> {
-    Arc::new(Memory::new().with::<Bank>())
+fn bank() -> Runtime {
+    Runtime::spawn(Memory::new().with::<Bank>())
 }
 
 fn sam() -> AccountId {
@@ -156,7 +156,7 @@ fn after_the_connection_drops_live_reads_and_sends_carry_on() {
     // The server goes away, and the model changes while the app is cut off.
     server.stop();
     eventually(|| matches!(*connection.latest().0, Connection::Reconnecting { .. }));
-    memory.send(&sam(), DepositMoney { amount: 5 }).unwrap();
+    memory.call(move |m| m.send(&sam(), DepositMoney { amount: 5 }).map(drop)).unwrap().unwrap();
     // The app sends while offline; the command waits, and the summary shows it at once.
     let offline = app.send(&sam(), DepositMoney { amount: 1 });
     assert_eq!(*app.unsent().latest().0, 1);
@@ -199,7 +199,7 @@ fn a_refused_prediction_is_taken_back() {
     // Frozen while the app is offline; the app doesn't know.
     server.stop();
     eventually(|| matches!(*app.connection().latest().0, Connection::Reconnecting { .. }));
-    memory.send(&sam(), FreezeAccount).unwrap();
+    memory.call(move |m| m.send(&sam(), FreezeAccount).map(drop)).unwrap().unwrap();
     let withdraw = app.send(&sam(), WithdrawMoney { amount: 30 });
     assert_eq!(balance(), 70, "shown at once");
     let overdraft = app.send(&sam(), WithdrawMoney { amount: 500 });
@@ -214,7 +214,7 @@ fn a_refused_prediction_is_taken_back() {
 #[test]
 fn a_command_cut_off_before_its_answer_is_sent_again_and_takes_effect_once() {
     let memory = bank();
-    memory.send(&sam(), OpenAccount { owner: "sam".into() }).unwrap();
+    memory.call(move |m| m.send(&sam(), OpenAccount { owner: "sam".into() }).map(drop)).unwrap().unwrap();
     // The first server commits the deposit, then the connection drops before the answer.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -228,7 +228,7 @@ fn a_command_cut_off_before_its_answer_is_sent_again_and_takes_effect_once() {
             let Ok(Message::Text(text)) = reader.read() else { continue };
             if let Op::Send { input, command_id, .. } = serde_json::from_str::<Request>(&text).unwrap().op {
                 let deposit: DepositMoney = serde_json::from_value(input).unwrap();
-                committing.send_with_id(&sam(), deposit, command_id).unwrap();
+                committing.call(move |m| m.send_with_id(&sam(), deposit, command_id).map(drop)).unwrap().unwrap();
                 return writer.shutdown();
             }
         }
@@ -239,7 +239,7 @@ fn a_command_cut_off_before_its_answer_is_sent_again_and_takes_effect_once() {
     cut_off.join().unwrap();
     let _server = serve(&memory, &addr);
     assert_eq!(wait(deposit).unwrap().reply, Balance { balance: 10 }, "the first receipt");
-    assert_eq!(memory.events(&sam()).len(), 2, "deposited once");
+    assert_eq!(memory.call(|m| m.events(&sam()).len()).unwrap(), 2, "deposited once");
 }
 
 /// The frame loop: check each frame until it's there.

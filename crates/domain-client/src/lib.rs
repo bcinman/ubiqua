@@ -29,7 +29,7 @@ use domain::{
     AggregateId, Api, Apply, Command, CommandId, Cursor, Entry, Frame, Handles, MaybeSend, MaybeSync, NotCaughtUp,
     Position, ReadCx, Reads, Receipt, SendError, Snapshot, Validate, View,
 };
-use domain_memory::{Memory, Publisher, ViewReader, Watch};
+use domain_memory::{Memory, Publisher, Runtime, ViewReader, Watch};
 use live::Shared;
 use pending::{lock, pending};
 use predict::{Overlay, Predictor};
@@ -72,25 +72,10 @@ impl<A: Api> Clone for Client<A> {
 
 #[derive(Clone)]
 enum Backend {
-    Local {
-        memory: Arc<Memory>,
-        runner: Runner,
-    },
+    Local(Runtime),
     #[cfg(not(target_arch = "wasm32"))]
     Remote(Arc<remote::Remote>),
 }
-
-#[derive(Clone)]
-enum Runner {
-    /// Commands run on the caller's thread.
-    Inline,
-    /// Commands run, in order, on the client's domain thread.
-    #[cfg(not(target_arch = "wasm32"))]
-    Thread(Arc<std::sync::mpsc::Sender<Job>>),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-type Job = Box<dyn FnOnce(&Memory) + Send>;
 
 /// How a client is connected to its model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,66 +95,11 @@ pub enum Connection {
 }
 
 impl<A: Api> Client<A> {
-    /// Runs commands on a domain thread of their own, so the UI thread never waits on one. The
-    /// model's policies and scheduled commands run there too, between commands. On wasm, which
-    /// has no threads, this is [`inline`](Self::inline).
-    pub fn in_process(memory: Arc<Memory>) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::sync::mpsc::RecvTimeoutError;
-            let (jobs, queue) = std::sync::mpsc::channel::<Job>();
-            let jobs = Arc::new(jobs);
-            // Wake the thread when there's work for policies. Weak, so the thread still stops
-            // once every client is gone.
-            let wake = Arc::downgrade(&jobs);
-            memory.on_wake(move || {
-                if let Some(jobs) = wake.upgrade() {
-                    let _ = jobs.send(Box::new(|_| {}));
-                }
-            });
-            let worker = memory.clone();
-            std::thread::Builder::new()
-                .name("domain".into())
-                .spawn(move || {
-                    let guard = std::panic::AssertUnwindSafe(&worker);
-                    loop {
-                        let due = std::panic::catch_unwind(|| guard.run_due()).ok().flatten();
-                        let next = match due {
-                            Some(at) => queue.recv_timeout(worker.now().until(at)),
-                            None => queue.recv().map_err(|_| RecvTimeoutError::Disconnected),
-                        };
-                        match next {
-                            // A panicking `send_then` callback mustn't stop the commands after it.
-                            Ok(job) => {
-                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&worker)));
-                            }
-                            Err(RecvTimeoutError::Timeout) => {}
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        }
-                    }
-                })
-                .expect("spawn the domain thread");
-            Self::local(memory, Runner::Thread(jobs))
-        }
-        #[cfg(target_arch = "wasm32")]
-        Self::inline(memory)
-    }
-
-    /// Runs commands on the caller's thread: for tests, and anywhere waiting is fine. Policies
-    /// run on whichever thread wakes them. Scheduled commands fire when something calls
-    /// `Memory::run_due`; on the web, call it from a timer.
-    pub fn inline(memory: Arc<Memory>) -> Self {
-        let weak = Arc::downgrade(&memory);
-        memory.on_wake(move || {
-            if let Some(memory) = weak.upgrade() {
-                memory.run_due();
-            }
-        });
-        Self::local(memory, Runner::Inline)
-    }
-
-    fn local(memory: Arc<Memory>, runner: Runner) -> Self {
-        Self { backend: Backend::Local { memory, runner }, actor: None, predictor: Arc::default(), _api: PhantomData }
+    /// Talks to the model `runtime` runs in this process. With [`Runtime::spawn`], commands run
+    /// on its thread, so the UI thread never waits on one; with [`Runtime::inline`], on the
+    /// caller's.
+    pub fn in_process(runtime: Runtime) -> Self {
+        Self { backend: Backend::Local(runtime), actor: None, predictor: Arc::default(), _api: PhantomData }
     }
 
     /// Talks to a model a `domain-server` serves at `url`, such as `ws://127.0.0.1:7878/`, or
@@ -267,7 +197,7 @@ impl<A: Api> Client<A> {
     /// A command id no other command has used.
     pub fn new_command_id(&self) -> CommandId {
         match &self.backend {
-            Backend::Local { memory, .. } => memory.new_command_id(),
+            Backend::Local(runtime) => runtime.new_command_id(),
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => remote.new_command_id(),
         }
@@ -279,7 +209,7 @@ impl<A: Api> Client<A> {
         A: Reads<V>,
     {
         let inner = match &self.backend {
-            Backend::Local { memory, .. } => ViewInner::Local { reader: memory.view::<V>(), actor: self.actor.clone() },
+            Backend::Local(runtime) => ViewInner::Local { reader: runtime.view::<V>(), actor: self.actor.clone() },
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => ViewInner::Remote(remote.clone()),
         };
@@ -302,29 +232,21 @@ impl<A: Api> Client<A> {
             drop(prediction);
             then(sent);
         };
-        let (memory, runner) = match &self.backend {
-            Backend::Local { memory, runner } => (memory, runner),
+        let runtime = match &self.backend {
+            Backend::Local(runtime) => runtime,
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => return remote.send(id, command, command_id, then),
         };
-        let (id, actor) = (id.clone(), self.actor.clone());
-        let job = move |memory: &Memory| {
-            let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                memory.send_as(actor.as_ref(), &id, command, command_id.clone())
-            }));
-            then(sent.unwrap_or_else(|panic| Err(SendError::Unavailable { command_id, reason: reason(&*panic) })));
-        };
-        match runner {
-            Runner::Inline => job(memory),
-            #[cfg(not(target_arch = "wasm32"))]
-            Runner::Thread(jobs) => jobs.send(Box::new(job)).expect("the domain thread outlives its clients"),
-        }
+        let (id, actor, answered_id) = (id.clone(), self.actor.clone(), command_id.clone());
+        runtime.exec(
+            move |memory: &Memory| memory.send_as(actor.as_ref(), &id, command, command_id),
+            move |done| {
+                then(done.unwrap_or_else(|reason| {
+                    Err(SendError::Unavailable { command_id: answered_id, reason: format!("the command {reason}") })
+                }))
+            },
+        );
     }
-}
-
-fn reason(panic: &(dyn std::any::Any + Send)) -> String {
-    let message = panic.downcast_ref::<&str>().copied().or(panic.downcast_ref::<String>().map(String::as_str));
-    format!("the command panicked: {}", message.unwrap_or("no message"))
 }
 
 /// Why a read failed. `R` is the view's rejection.

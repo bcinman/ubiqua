@@ -450,3 +450,54 @@ fn a_saga_run_carries_on_after_a_restart_without_repeating_its_steps() {
     assert_eq!(memory.saga_status::<Pay>(&w("a")), SagaStatus::Completed);
     assert_eq!(memory.state(&w("a-paid")), 101, "one credit per step, and the claim stays refused");
 }
+
+#[test]
+fn in_a_batch_a_failed_write_is_dropped_alone_and_the_rest_commit_together() {
+    use domain_memory::store::{Commit, EventRow, Store};
+    let db = TempDb::new("batch");
+    let credit = |seq: u64| Commit {
+        aggregate: "Wallet".into(),
+        stream: "Wallet/a".into(),
+        events: vec![EventRow {
+            stream: "Wallet/a".into(),
+            seq,
+            id: "\"a\"".into(),
+            at: 0,
+            command_id: None,
+            event: format!(r#"{{"Credited":{{"amount":1,"total":{seq}}}}}"#),
+        }],
+        receipt: None,
+    };
+    {
+        let store = Sqlite::open(&db.0).unwrap();
+        store.begin_batch().unwrap();
+        store.commit(&credit(1)).unwrap();
+        assert!(store.commit(&credit(1)).is_err(), "seq 1 is taken");
+        store.commit(&credit(2)).unwrap();
+        store.commit_batch().unwrap();
+    }
+    let memory = db.open::<WalletsOnly>();
+    assert_eq!((memory.state(&w("a")), memory.events(&w("a")).len()), (2, 2));
+}
+
+#[test]
+fn commands_sent_through_a_runtime_without_waiting_are_all_stored() {
+    let db = TempDb::new("runtime");
+    let runtime = domain_memory::Runtime::spawn(db.open::<v0::Wallets>());
+    let (answer, answers) = std::sync::mpsc::channel();
+    for _ in 0..200 {
+        let answer = answer.clone();
+        runtime.exec(
+            |memory| memory.send(&w("a"), Credit { amount: 1 }).map(|receipt| receipt.reply),
+            move |sent| answer.send(sent).unwrap(),
+        );
+    }
+    let mut totals: Vec<u64> = answers.iter().take(200).map(|sent| sent.unwrap().unwrap()).collect();
+    totals.sort();
+    assert_eq!(totals, (1..=200).collect::<Vec<_>>());
+
+    // Every answer came after its command was stored: a second run reads them all.
+    let memory = db.open::<v0::Wallets>();
+    assert_eq!(memory.state(&w("a")), 200);
+    assert_eq!(memory.view::<v0::Summary>().get(&w("a")), Some(200));
+}

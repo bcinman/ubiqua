@@ -3,8 +3,8 @@
 Run the model on a server, and apps elsewhere use it through the same `Client`.
 
 ```rust
-let memory = Arc::new(Memory::new().with::<Bank>());
-let server = Server::<BankApi>::new(memory)
+let bank = Runtime::spawn(Memory::new().with::<Bank>());
+let server = Server::<BankApi>::new(bank)
     .sessions(|token| users.check(token))       // Option<User>
     .listen("0.0.0.0:7878")?;
 server.wait();
@@ -82,7 +82,7 @@ Tokens travel on the connection, so encrypt it whenever clients connect over the
 
 ```rust
 let tls = ServerTls::from_pem(&std::fs::read("fullchain.pem")?, &std::fs::read("privkey.pem")?)?;
-let server = Server::<BankApi>::new(memory).sessions(check).tls(tls).listen("0.0.0.0:443")?;
+let server = Server::<BankApi>::new(bank).sessions(check).tls(tls).listen("0.0.0.0:443")?;
 server.url()                                    // "wss://0.0.0.0:443/"
 ```
 
@@ -109,10 +109,12 @@ A TLS proxy in front of a plain server works too.
 One app runs the model and serves it to others:
 
 ```rust
-let memory = Arc::new(Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>());
-let me = Client::<BankApi>::in_process(memory.clone()).acting_as(User("sam".into()));
-let _server = Server::<BankApi>::new(memory).sessions(check).listen("0.0.0.0:7878")?;
+let bank = Runtime::spawn(Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>());
+let me = Client::<BankApi>::in_process(bank.clone()).acting_as(User("sam".into()));
+let _server = Server::<BankApi>::new(bank).sessions(check).listen("0.0.0.0:7878")?;
 ```
+
+The app's commands and every connection's queue for the same runtime thread.
 
 ## Serve telemetry
 

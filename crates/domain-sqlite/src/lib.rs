@@ -107,10 +107,24 @@ fn event_row(row: &rusqlite::Row) -> rusqlite::Result<EventRow> {
     })
 }
 
+// Each method writes in a savepoint: its own transaction outside a batch, and a part of the
+// batch's transaction inside one, rolled back alone when the method fails.
 impl Store for Sqlite {
+    fn begin_batch(&self) -> Result<(), StoreError> {
+        self.run(|c| c.execute_batch("BEGIN"))
+    }
+
+    fn commit_batch(&self) -> Result<(), StoreError> {
+        self.run(|c| {
+            c.execute_batch("COMMIT").inspect_err(|_| {
+                let _ = c.execute_batch("ROLLBACK");
+            })
+        })
+    }
+
     fn commit(&self, commit: &Commit) -> Result<(), StoreError> {
         self.run(|c| {
-            let tx = c.transaction()?;
+            let tx = c.savepoint()?;
             {
                 let mut insert = tx.prepare_cached(
                     "INSERT INTO events (aggregate, stream, seq, id, at, command_id, event)
@@ -219,7 +233,7 @@ impl Store for Sqlite {
 
     fn save_view(&self, view: &str, rows: &ViewRows) -> Result<(), StoreError> {
         self.run(|c| {
-            let tx = c.transaction()?;
+            let tx = c.savepoint()?;
             {
                 let mut key = tx.prepare_cached(
                     "INSERT INTO view_keys (view, key, state) VALUES (?1, ?2, ?3)
@@ -249,7 +263,7 @@ impl Store for Sqlite {
 
     fn reset_view(&self, view: &str, version: u64) -> Result<(), StoreError> {
         self.run(|c| {
-            let tx = c.transaction()?;
+            let tx = c.savepoint()?;
             for table in ["view_keys", "view_entries", "view_progress"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE view = ?1"), [view])?;
             }

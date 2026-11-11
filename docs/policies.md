@@ -162,7 +162,7 @@ With no adapter, every call fails:
 nothing answers FraudCheck.ScoreWithdrawal: pass an adapter to `Memory::external`
 ```
 
-The adapter can use any async library. Its future runs on the domain thread, so it shouldn't block.
+The adapter can use any async library. Its future runs on the runtime's thread, so it shouldn't block.
 
 ## Schedules
 
@@ -200,20 +200,15 @@ With [SQLite](storage.md), schedules survive a restart.
 
 | | Policies | Schedules |
 | --- | --- | --- |
-| `Client::in_process` | on the domain thread | on the domain thread, when due |
-| `Client::inline` | on the thread that sent the event | when you call `run_due` |
+| `Runtime::spawn` | on the runtime's thread | on the runtime's thread, when due |
+| `Runtime::inline` | on the thread that sent the event | when you call `run_due` |
 | `Memory` on its own | when you call `run_due` | when you call `run_due` |
 
 `run_due` does what's due and says when to call it again:
 
 ```rust
 let bank = Arc::new(bank);
-bank.on_wake(move || wake_my_loop());       // something new to run
-
-loop {
-    let next = bank.run_due();               // Option<Timestamp>
-    wait_until(next);                        // or until woken
-}
+let next = bank.run_due();                   // Option<Timestamp>
 ```
 
 On the web, call `run_due` from a timer.

@@ -5,8 +5,20 @@
 use domain::{MaybeSend, MaybeSync};
 use std::fmt;
 
-/// Durable storage for a `Memory`. Each method is one transaction.
+/// Durable storage for a `Memory`. Each method succeeds or fails as a whole. Between
+/// [`begin_batch`](Self::begin_batch) and [`commit_batch`](Self::commit_batch), what they write
+/// reaches the disk together; otherwise each method is its own transaction.
 pub trait Store: MaybeSend + MaybeSync {
+    /// Starts a batch, which a [`Runtime`](crate::Runtime) does around the commands it has queued.
+    /// The default doesn't batch.
+    fn begin_batch(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+    /// Makes everything written since `begin_batch` durable, or, when that fails, none of it.
+    fn commit_batch(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Records a command's events and receipt together, or neither. Fails if an event's
     /// `(stream, seq)` is already taken.
     fn commit(&self, commit: &Commit) -> Result<(), StoreError>;

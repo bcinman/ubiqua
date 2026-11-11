@@ -11,6 +11,7 @@
 mod calls;
 mod policies;
 mod projections;
+mod runtime;
 mod sagas;
 mod schedules;
 pub mod store;
@@ -20,6 +21,7 @@ mod views;
 pub use calls::StubbedCall;
 pub use policies::{PolicyCx, PolicyError, React};
 pub use projections::{Project, ProjectionError, ProjectionInput};
+pub use runtime::Runtime;
 pub use sagas::{Run, SagaCx, SagaStatus, Settle, Signal, SignalError, Step};
 pub use schedules::{ScheduleError, UnscheduleError};
 use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
@@ -192,8 +194,8 @@ impl Memory {
 
     /// Runs what's due: scheduled commands whose time has come, then each policy's events, until
     /// nothing more can run now. Returns when something is next due, such as a schedule or a
-    /// failed policy's retry; call it again then, and whenever an [`on_wake`](Self::on_wake) hook
-    /// fires. `Client::in_process` does this on its domain thread.
+    /// failed policy's retry; call it again then, and whenever the model has new work for a
+    /// policy. A [`Runtime`] does this on its thread.
     ///
     /// Safe to call from any thread, and from inside a policy: a call while it's already running
     /// makes the running one look again.
@@ -228,8 +230,20 @@ impl Memory {
     /// Calls `hook` whenever there's new work for [`run_due`](Self::run_due): an event for a
     /// policy, an answered call, a new schedule. It should only arrange for `run_due` to be
     /// called, such as by waking a thread.
-    pub fn on_wake(&self, hook: impl Fn() + MaybeSend + MaybeSync + 'static) {
+    pub(crate) fn on_wake(&self, hook: impl Fn() + MaybeSend + MaybeSync + 'static) {
         lock(&self.hooks).push(Arc::new(hook));
+    }
+
+    /// Runs `f` in one store batch, so what it writes reaches the store together. Returns what
+    /// `f` returned, and whether the batch committed. Without a store, or when the store can't
+    /// start a batch, each write commits on its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn batch<T>(&self, f: impl FnOnce() -> T) -> (T, Result<(), String>) {
+        let Some(store) = self.store.as_ref().filter(|store| store.begin_batch().is_ok()) else {
+            return (f(), Ok(()));
+        };
+        let value = f();
+        (value, store.commit_batch().map_err(|e| e.to_string()))
     }
 
     /// What's failing now: each policy's or projection's last failure, until it succeeds on that

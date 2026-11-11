@@ -28,6 +28,7 @@ cargo test -p bank --benches                         # run each benchmark once, 
 | The first command after a restart | `sqlite/first_read/*` | An account reads its events from the file the first time it's used. |
 | Restart time | `sqlite/restart/*` | Opening a bank with views stored, or rebuilding them from every event. |
 | Reactions | `workflows`: `workflows/scored_withdrawal`, `workflows/transfer` | A policy calling an external system, and a saga's full transfer: request, debit, credit, complete. |
-| What an app waits for | `client`: `client/in_process/*`, `client/websocket/*` | A receipt or a read through a `Client`, from a domain thread or over a WebSocket on loopback, and how long a change takes to reach another client's live view. |
+| What an app waits for | `client`: `client/in_process/*`, `client/websocket/*` | A receipt or a read through a `Client`, from the runtime's thread or over a WebSocket on loopback, and how long a change takes to reach another client's live view. |
+| Commands in flight | `client/in_process/send_*_in_flight`, `client/sqlite/*` | How many commands go through when an app or several apps send without waiting, in memory and with SQLite, where a runtime commits each batch in one transaction. |
 
 `storage` writes real files in the system's temporary directory, so it measures that disk too. `send_parallel` uses 4 threads; it needs at least 4 cores to show parallelism.

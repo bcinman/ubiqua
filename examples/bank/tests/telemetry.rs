@@ -5,7 +5,7 @@ use bank::*;
 use domain::Timestamp;
 use domain::telemetry::{Kind, Outcome, Since, Trace};
 use domain_client::{Client, Pending};
-use domain_memory::{Memory, TraceFeed};
+use domain_memory::{Memory, Runtime, TraceFeed};
 use domain_server::Server;
 use domain_sqlite::Sqlite;
 use std::collections::BTreeMap;
@@ -226,7 +226,7 @@ fn a_replay_reads_what_an_earlier_run_kept_on_disk() {
 
 #[test]
 fn a_server_serves_telemetry_only_to_whom_it_allows_and_a_trace_carries_on_after_a_reconnect() {
-    let bank = Arc::new(Memory::with_clock(ticking()).with::<Bank>());
+    let bank = Runtime::spawn(Memory::with_clock(ticking()).with::<Bank>());
     let serve = |addr: &str| {
         Server::<BankApi>::new(bank.clone())
             .sessions(|token| ["sam", "ops"].contains(&token).then(|| User(token.into())))
@@ -236,7 +236,7 @@ fn a_server_serves_telemetry_only_to_whom_it_allows_and_a_trace_carries_on_after
     };
     let server = serve("127.0.0.1:0");
     let addr = server.addr().to_string();
-    bank.send(&sam(), OpenAccount { owner: "sam".into() }).unwrap();
+    bank.call(move |m| m.send(&sam(), OpenAccount { owner: "sam".into() }).map(drop)).unwrap().unwrap();
 
     let stranger = Client::<BankApi>::connect(&server.url(), Some("sam"));
     let refused = wait(stranger.telemetry().catalog()).unwrap_err();
@@ -252,15 +252,15 @@ fn a_server_serves_telemetry_only_to_whom_it_allows_and_a_trace_carries_on_after
     assert_eq!(account.version, 1);
     let trace = ops.telemetry().trace(Since::Start);
     let mut seen = next(&trace, |t| matches!(t, Trace::CaughtUp { .. }));
-    bank.send(&sam(), DepositMoney { amount: 10 }).unwrap();
+    bank.call(move |m| m.send(&sam(), DepositMoney { amount: 10 }).map(drop)).unwrap().unwrap();
     seen.extend(next(&trace, |t| matches!(t, Trace::View(v) if v.view == "Statement")));
 
     // The server goes away and the bank moves on; the trace picks up where it was.
     server.stop();
-    bank.send(&sam(), DepositMoney { amount: 5 }).unwrap();
+    bank.call(move |m| m.send(&sam(), DepositMoney { amount: 5 }).map(drop)).unwrap().unwrap();
     let _server = serve(&addr);
     seen.extend(next(&trace, |t| matches!(t, Trace::CaughtUp { .. })));
-    bank.send(&sam(), DepositMoney { amount: 1 }).unwrap();
+    bank.call(move |m| m.send(&sam(), DepositMoney { amount: 1 }).map(drop)).unwrap().unwrap();
     seen.extend(next(&trace, |t| matches!(t, Trace::View(v) if v.view == "Statement" && v.emitted[0].cursor == 3)));
 
     let seqs: Vec<u64> = seen

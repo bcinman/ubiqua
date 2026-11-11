@@ -3,8 +3,8 @@
 //! once: each sees the others' changes as they commit.
 //!
 //! ```text
-//! let memory = Arc::new(Memory::new().with::<Bank>());
-//! let server = Server::<BankApi>::new(memory).sessions(|token| users.check(token)).listen("0.0.0.0:7878")?;
+//! let bank = Runtime::spawn(Memory::new().with::<Bank>());
+//! let server = Server::<BankApi>::new(bank).sessions(|token| users.check(token)).listen("0.0.0.0:7878")?;
 //! server.wait();
 //! ```
 //!
@@ -15,7 +15,7 @@ use domain::wire::{self, At, Body, Failure, Op, Request, Response};
 use domain::{
     AggregateId, Api, Apply, Command, Cursor, Frame, Handles, Position, ReadCx, SendError, StreamId, Validate, View,
 };
-use domain_memory::{Feed, Memory, TraceFeed, Watch};
+use domain_memory::{Feed, Memory, Runtime, TraceFeed, Watch};
 use domain_websocket::{Message, ServerTls, Writer};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -26,7 +26,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 /// The most entries one `list` returns.
@@ -37,7 +37,7 @@ type Observers = Arc<dyn Fn(Option<&CurrentActor>) -> bool + Send + Sync>;
 
 /// A model's Api, ready to serve. Start it with [`listen`](Self::listen).
 pub struct Server<A: Api> {
-    memory: Arc<Memory>,
+    runtime: Runtime,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
     observers: Option<Observers>,
@@ -46,15 +46,16 @@ pub struct Server<A: Api> {
 }
 
 impl<A: Api> Server<A> {
-    /// Serves the commands and views `A` lists, on `memory`.
+    /// Serves the commands and views `A` lists, on the model `runtime` runs. Commands from every
+    /// connection queue for its thread; reads run on each connection's own.
     ///
     /// # Panics
-    /// When `memory` doesn't host one of the Api's views.
-    pub fn new(memory: Arc<Memory>) -> Self {
-        let mut registrar = Registrar { memory: &memory, routes: Routes::default() };
+    /// When the model doesn't host one of the Api's views.
+    pub fn new(runtime: Runtime) -> Self {
+        let mut registrar = Registrar { runtime: &runtime, routes: Routes::default() };
         A::register(&mut registrar);
         let routes = Arc::new(registrar.routes);
-        Self { memory, routes, sessions: None, observers: None, tls: None, _api: PhantomData }
+        Self { runtime, routes, sessions: None, observers: None, tls: None, _api: PhantomData }
     }
 
     /// Serves `wss://` with this certificate, so connections are encrypted and clients can check
@@ -88,8 +89,8 @@ impl<A: Api> Server<A> {
         self
     }
 
-    /// Listens on `addr`, such as `"0.0.0.0:7878"`, or `"127.0.0.1:0"` for any free port. Also runs
-    /// the model's policies and schedules. Serves until [`Listening::stop`] or until it's dropped.
+    /// Listens on `addr`, such as `"0.0.0.0:7878"`, or `"127.0.0.1:0"` for any free port. Serves
+    /// until [`Listening::stop`] or until it's dropped.
     pub fn listen(self, addr: impl ToSocketAddrs) -> io::Result<Listening> {
         let listener = TcpListener::bind(addr)?;
         let addr = listener.local_addr()?;
@@ -98,7 +99,6 @@ impl<A: Api> Server<A> {
             connections: Mutex::default(),
             next: AtomicU64::new(0),
         });
-        let wake = run_due(self.memory.clone());
         let scheme = if self.tls.is_some() { "wss" } else { "ws" };
         let accepting = shared.clone();
         let accept = std::thread::Builder::new().name("domain-server".into()).spawn(move || {
@@ -108,7 +108,7 @@ impl<A: Api> Server<A> {
                 }
                 let Ok(stream) = stream else { continue };
                 let connection = Connection {
-                    memory: self.memory.clone(),
+                    runtime: self.runtime.clone(),
                     routes: self.routes.clone(),
                     sessions: self.sessions.clone(),
                     observers: self.observers.clone(),
@@ -120,7 +120,7 @@ impl<A: Api> Server<A> {
                     .spawn(move || connection.serve(stream));
             }
         })?;
-        Ok(Listening { addr, scheme, shared, accept: Some(accept), _wake: wake })
+        Ok(Listening { addr, scheme, shared, accept: Some(accept) })
     }
 }
 
@@ -130,8 +130,6 @@ pub struct Listening {
     scheme: &'static str,
     shared: Arc<Shared>,
     accept: Option<std::thread::JoinHandle<()>>,
-    /// Keeps the policy thread running; dropping it stops that thread.
-    _wake: Arc<Sender<()>>,
 }
 
 impl Listening {
@@ -178,32 +176,6 @@ struct Shared {
     next: AtomicU64,
 }
 
-/// Runs the model's policies and schedules on a thread of their own, until the returned sender
-/// is dropped.
-fn run_due(memory: Arc<Memory>) -> Arc<Sender<()>> {
-    let (wake, woken) = mpsc::channel::<()>();
-    let wake = Arc::new(wake);
-    let weak = Arc::downgrade(&wake);
-    memory.on_wake(move || {
-        if let Some(wake) = weak.upgrade() {
-            let _ = wake.send(());
-        }
-    });
-    let _ = std::thread::Builder::new().name("domain-policies".into()).spawn(move || {
-        loop {
-            let due = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memory.run_due())).ok().flatten();
-            let next = match due {
-                Some(at) => woken.recv_timeout(memory.now().until(at)),
-                None => woken.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            };
-            if next == Err(RecvTimeoutError::Disconnected) {
-                return;
-            }
-        }
-    });
-    wake
-}
-
 /// How to run each command and read each view the Api lists, by name.
 #[derive(Default)]
 struct Routes {
@@ -213,23 +185,23 @@ struct Routes {
 
 /// Collects the routes, checking each view is hosted.
 struct Registrar<'a> {
-    memory: &'a Memory,
+    runtime: &'a Runtime,
     routes: Routes,
 }
 
 type CommandFn = fn(&Memory, Option<&CurrentActor>, Value, String, Value) -> Body;
 
 struct ViewRoute {
-    get: fn(&Memory, Option<&CurrentActor>, Value, Option<At>) -> Body,
-    snapshot: fn(&Memory, Option<&CurrentActor>, Value) -> Body,
-    list: fn(&Memory, Option<&CurrentActor>, Value, u64, usize) -> Body,
+    get: fn(&Runtime, Option<&CurrentActor>, Value, Option<At>) -> Body,
+    snapshot: fn(&Runtime, Option<&CurrentActor>, Value) -> Body,
+    list: fn(&Runtime, Option<&CurrentActor>, Value, u64, usize) -> Body,
     /// Starts a watch or feed. The returned handle keeps it running.
     watch: WatchFn,
     events: EventsFn,
 }
 
-type WatchFn = fn(&Memory, Option<CurrentActor>, Value, Outbox) -> Result<Handle, Body>;
-type EventsFn = fn(&Memory, Option<CurrentActor>, Value, u64, Outbox) -> Result<Handle, Body>;
+type WatchFn = fn(&Runtime, Option<CurrentActor>, Value, Outbox) -> Result<Handle, Body>;
+type EventsFn = fn(&Runtime, Option<CurrentActor>, Value, u64, Outbox) -> Result<Handle, Body>;
 
 type Handle = Box<dyn Any + Send>;
 
@@ -243,7 +215,7 @@ impl ApiRegistry for Registrar<'_> {
 
     fn view<V: Apply + Validate>(&mut self) {
         // Fails now, with the view's name, rather than on the first read.
-        let _ = self.memory.view::<V>();
+        let _ = self.runtime.view::<V>();
         let route = ViewRoute {
             get: get::<V>,
             snapshot: snapshot::<V>,
@@ -290,10 +262,10 @@ fn validate<V: Validate>(actor: Option<&CurrentActor>, key: &V::Key, state: Opti
     V::validate(&ReadCx::new(actor), key, state).map_err(|r| encode(&r).map_or_else(unavailable, Body::Refused))
 }
 
-fn get<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: Value, at_least: Option<At>) -> Body {
+fn get<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>, key: Value, at_least: Option<At>) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let reader = memory.view::<V>();
+        let reader = runtime.view::<V>();
         let state = match at_least {
             Some(At { stream, version }) => {
                 reader.get_at_least(&key, Position { stream: StreamId::from(stream), version }).map_err(|e| {
@@ -313,10 +285,10 @@ fn get<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: 
     read().unwrap_or_else(|body| body)
 }
 
-fn snapshot<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: Value) -> Body {
+fn snapshot<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>, key: Value) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let snapshot = memory.view::<V>().snapshot(&key);
+        let snapshot = runtime.view::<V>().snapshot(&key);
         validate::<V>(actor, &key, snapshot.state.as_ref())?;
         Ok(wire::encode_snapshot(&snapshot).map_or_else(unavailable, Body::Ok))
     };
@@ -324,7 +296,7 @@ fn snapshot<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, 
 }
 
 fn list<V: Apply + Validate>(
-    memory: &Memory,
+    runtime: &Runtime,
     actor: Option<&CurrentActor>,
     key: Value,
     after: u64,
@@ -332,7 +304,7 @@ fn list<V: Apply + Validate>(
 ) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let reader = memory.view::<V>();
+        let reader = runtime.view::<V>();
         validate::<V>(actor, &key, reader.get(&key).as_ref())?;
         let entries: Result<Vec<_>, _> =
             reader.list(&key, Cursor::new(after), take.min(MAX_LIST)).iter().map(wire::encode_entry).collect();
@@ -353,13 +325,13 @@ struct Relay<V: View, S> {
 }
 
 fn watch<V: Apply + Validate>(
-    memory: &Memory,
+    runtime: &Runtime,
     actor: Option<CurrentActor>,
     key: Value,
     out: Outbox,
 ) -> Result<Handle, Body> {
     let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-    let watch = memory.view::<V>().watch(&key);
+    let watch = runtime.view::<V>().watch(&key);
     let relay = Arc::new(Relay::<V, Watch<V>> {
         subscription: watch,
         order: Mutex::new(()),
@@ -388,14 +360,14 @@ fn watch<V: Apply + Validate>(
 }
 
 fn events<V: Apply + Validate>(
-    memory: &Memory,
+    runtime: &Runtime,
     actor: Option<CurrentActor>,
     key: Value,
     after: u64,
     out: Outbox,
 ) -> Result<Handle, Body> {
     let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-    let reader = memory.view::<V>();
+    let reader = runtime.view::<V>();
     validate::<V>(actor.as_ref(), &key, reader.get(&key).as_ref())?;
     let feed = reader.events(&key, Cursor::new(after));
     let relay = Arc::new(Relay::<V, Feed<V>> {
@@ -490,7 +462,7 @@ enum Outgoing {
 }
 
 struct Connection {
-    memory: Arc<Memory>,
+    runtime: Runtime,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
     observers: Option<Observers>,
@@ -575,22 +547,32 @@ impl Connection {
             }
         };
         let outbox = Outbox { id: request.id, out: out.clone() };
-        let memory = &*self.memory;
+        let runtime = &self.runtime;
         let route = |view: &str| self.routes.views.get(view).ok_or_else(|| unknown("view", view));
         let answer = match request.op {
             Op::Send { command, target, command_id, input } => match self.routes.commands.get(command.as_str()) {
-                Some(run) => run(memory, actor, target, command_id, input),
+                Some(&run) => {
+                    // Answered from the runtime's thread, once the command is stored.
+                    let (actor, outbox) = (actor.cloned(), outbox.clone());
+                    runtime.exec(
+                        move |memory: &Memory| run(memory, actor.as_ref(), target, command_id, input),
+                        move |body| {
+                            outbox.send(body.unwrap_or_else(|reason| unavailable(format!("the command {reason}"))))
+                        },
+                    );
+                    return;
+                }
                 None => unknown("command", &command),
             },
             Op::Get { view, key, at_least } => {
-                route(&view).map_or_else(|e| e, |r| (r.get)(memory, actor, key, at_least))
+                route(&view).map_or_else(|e| e, |r| (r.get)(runtime, actor, key, at_least))
             }
-            Op::Snapshot { view, key } => route(&view).map_or_else(|e| e, |r| (r.snapshot)(memory, actor, key)),
+            Op::Snapshot { view, key } => route(&view).map_or_else(|e| e, |r| (r.snapshot)(runtime, actor, key)),
             Op::List { view, key, after, take } => {
-                route(&view).map_or_else(|e| e, |r| (r.list)(memory, actor, key, after, take))
+                route(&view).map_or_else(|e| e, |r| (r.list)(runtime, actor, key, after, take))
             }
             Op::Watch { view, key } => {
-                match route(&view).and_then(|r| (r.watch)(memory, actor.cloned(), key, outbox.clone())) {
+                match route(&view).and_then(|r| (r.watch)(runtime, actor.cloned(), key, outbox.clone())) {
                     Ok(handle) => {
                         live.insert(request.id, handle);
                         return;
@@ -599,7 +581,7 @@ impl Connection {
                 }
             }
             Op::Events { view, key, after } => {
-                match route(&view).and_then(|r| (r.events)(memory, actor.cloned(), key, after, outbox.clone())) {
+                match route(&view).and_then(|r| (r.events)(runtime, actor.cloned(), key, after, outbox.clone())) {
                     Ok(handle) => {
                         live.insert(request.id, handle);
                         return;
@@ -616,20 +598,20 @@ impl Connection {
             {
                 Body::Err(Failure::Invalid("this connection may not read telemetry".into()))
             }
-            Op::Catalog => encode(&memory.telemetry().catalog()).map_or_else(unavailable, Body::Ok),
-            Op::Status => match memory.telemetry().status() {
+            Op::Catalog => encode(&runtime.telemetry().catalog()).map_or_else(unavailable, Body::Ok),
+            Op::Status => match runtime.telemetry().status() {
                 Ok(status) => encode(&status).map_or_else(unavailable, Body::Ok),
                 Err(e) => unavailable(e),
             },
-            Op::Aggregate { stream, at } => match memory.telemetry().aggregate(&stream, at) {
+            Op::Aggregate { stream, at } => match runtime.telemetry().aggregate(&stream, at) {
                 Ok(aggregate) => encode(&aggregate).map_or_else(unavailable, Body::Ok),
                 Err(e) => unavailable(e),
             },
-            Op::ViewKeys { view } => match memory.telemetry().view(&view) {
+            Op::ViewKeys { view } => match runtime.telemetry().view(&view) {
                 Some(keys) => encode(&keys).map_or_else(unavailable, Body::Ok),
                 None => Body::Err(Failure::Invalid(format!("no view {view} is hosted here"))),
             },
-            Op::Trace { since } => match memory.telemetry().trace(since) {
+            Op::Trace { since } => match runtime.telemetry().trace(since) {
                 Ok(feed) => {
                     live.insert(request.id, trace(feed, outbox));
                     return;

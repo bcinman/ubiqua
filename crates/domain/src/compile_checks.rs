@@ -38,6 +38,15 @@
 //!         Ok(vec![Closed.into()])
 //!     }
 //! }
+//!
+//! #[derive(Saga, serde::Serialize, serde::Deserialize)]
+//! #[saga(key = DoorId, rejects(Jammed, Locked))]
+//! pub struct Shut;
+//!
+//! // A step's rejections pass on with `?`.
+//! fn step(refused: CloseRejection) -> Result<(), ShutRejection> {
+//!     Err(refused)?
+//! }
 //! ```
 //!
 //! `decide` returns an event its command doesn't declare:
@@ -341,4 +350,25 @@
 //! pub struct Log;
 //! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
 //! // no impl Predict<Close> for Log
+//! ```
+//!
+//! A saga's step can be refused in a way the saga doesn't list:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Locked;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } }
+//! #[derive(Saga, serde::Serialize, serde::Deserialize)]
+//! #[saga(key = DoorId, rejects(Locked))]
+//! pub struct Shut;
+//!
+//! fn step(refused: CloseRejection) -> Result<(), ShutRejection> {
+//!     Err(refused)? // Jammed isn't in `rejects(..)`
+//! }
 //! ```

@@ -203,6 +203,20 @@ pub struct AccountSummary;
 error[E0277]: `AccountSummary` lists `DepositMoney` in `predicts(..)` but has no `impl Predict<DepositMoney>`
 ```
 
+## A saga step refused in a way the saga doesn't list
+
+```rust
+#[domain::saga(key = TransferId, rejects(NotOpen, InsufficientFunds))]   // no Frozen
+pub struct ExecuteTransfer { .. }
+
+cx.send("debit", &self.from, WithdrawMoney { amount: self.amount }).await?;   // WithdrawMoney rejects Frozen
+```
+
+```text
+error[E0277]: `?` couldn't convert the error: `Frozen: WidenRejection<ExecuteTransferRejection>` is not satisfied
+  add `Frozen` to the saga's `rejects(..)`, or handle it before `?`
+```
+
 ## A missing attribute
 
 ```rust

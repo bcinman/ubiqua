@@ -114,8 +114,7 @@ pub struct DestinationClosed;
 /// Carries out one transfer.
 #[domain::saga(
     key = TransferId,
-    rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed),
-    sends(WithdrawMoney)
+    rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed)
 )]
 pub struct ExecuteTransfer {
     pub from: AccountId,

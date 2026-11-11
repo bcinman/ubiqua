@@ -14,8 +14,7 @@ Shortened from [`examples/bank/src/transfers.rs`](../examples/bank/src/transfers
 ```rust
 #[domain::saga(
     key = TransferId,
-    rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed),
-    sends(WithdrawMoney)
+    rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed)
 )]
 pub struct ExecuteTransfer {
     pub from: AccountId,
@@ -82,9 +81,13 @@ Without a model, `.saga::<ExecuteTransfer>()` hosts one.
 | --- | --- |
 | `key = TransferId` | one run per key |
 | `rejects(..)` | how a run can be refused |
-| `sends(WithdrawMoney)` | commands whose rejections `?` passes on |
 
-The attribute writes `ExecuteTransferRejection`. With `sends(WithdrawMoney)`, `?` on a debit turns `InsufficientFunds` into `ExecuteTransferRejection::InsufficientFunds`.
+The attribute writes `ExecuteTransferRejection`. `?` on a step passes its rejection on: a refused debit's `InsufficientFunds` becomes `ExecuteTransferRejection::InsufficientFunds`. A step that can be refused in a way `rejects(..)` doesn't list doesn't build:
+
+```text
+error[E0277]: `?` couldn't convert the error: `Frozen: WidenRejection<ExecuteTransferRejection>` is not satisfied
+  add `Frozen` to the saga's `rejects(..)`, or handle it before `?`
+```
 
 ## Steps
 

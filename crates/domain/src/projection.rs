@@ -34,7 +34,8 @@ pub trait Saga: Serialize + DeserializeOwned + 'static {
 }
 
 /// Converts a command's rejections into a saga's. `#[domain::command(..)]` implements it for every
-/// rejection set that includes all of the command's.
+/// rejection set that includes all of the command's, and a saga's rejections convert from it with `?`.
+#[diagnostic::on_unimplemented(label = "add `{Self}` to the saga's `rejects(..)`, or handle it before `?`")]
 pub trait WidenRejection<R>: Rejections {
     fn widen(self) -> R;
 }

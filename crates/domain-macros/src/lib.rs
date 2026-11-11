@@ -72,7 +72,7 @@ pub fn projection(args: TokenStream, item: TokenStream) -> TokenStream {
     declaration(args, item, Some("projection"), quote!(), projection_impl)
 }
 
-/// `#[domain::saga(key = Key, rejects(..), sends(..))]`: `#[derive(Saga)]` with those arguments,
+/// `#[domain::saga(key = Key, rejects(..))]`: `#[derive(Saga)]` with those arguments,
 /// plus the derives `Saga` requires: `Serialize` and `Deserialize`.
 #[proc_macro_attribute]
 pub fn saga(args: TokenStream, item: TokenStream) -> TokenStream {
@@ -598,10 +598,10 @@ fn projection_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// `#[saga(key = Key, rejects(..), sends(..))]`
+/// `#[saga(key = Key, rejects(..))]`
 ///
-/// Generates `<Name>Rejection` and `impl Saga`. For each command in `sends(..)`, its rejections
-/// convert into the saga's with `?`; the saga's `rejects(..)` must include them all.
+/// Generates `<Name>Rejection` and `impl Saga`. Any command's rejections convert into the saga's
+/// with `?`, when the saga's `rejects(..)` includes them all.
 #[proc_macro_derive(Saga, attributes(saga))]
 pub fn derive_saga(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -610,16 +610,14 @@ pub fn derive_saga(input: TokenStream) -> TokenStream {
 
 fn saga_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
-    let (mut key, mut rejects, mut sends) = (None, Vec::new(), Vec::new());
+    let (mut key, mut rejects) = (None, Vec::new());
     parse_attr(input, "saga", |meta| {
         if meta.path.is_ident("key") {
             key = Some(meta.value()?.parse::<Type>()?);
         } else if meta.path.is_ident("rejects") {
             rejects = paths(&meta)?;
-        } else if meta.path.is_ident("sends") {
-            sends = paths(&meta)?;
         } else {
-            return Err(meta.error("expected `key`, `rejects` or `sends`"));
+            return Err(meta.error("expected `key` or `rejects`"));
         }
         Ok(())
     })?;
@@ -640,13 +638,12 @@ fn saga_impl(input: &DeriveInput) -> syn::Result<Tokens> {
             type Rejection = #rejection_enum;
         }
 
-        #(
-            impl ::std::convert::From<<#sends as ::domain::Command>::Rejection> for #rejection_enum {
-                fn from(rejection: <#sends as ::domain::Command>::Rejection) -> Self {
-                    ::domain::host::WidenRejection::widen(rejection)
-                }
+        // A step's rejections, for `?`: any command's whose rejections are all in `rejects(..)`.
+        impl<__R: ::domain::host::WidenRejection<#rejection_enum>> ::std::convert::From<__R> for #rejection_enum {
+            fn from(rejection: __R) -> Self {
+                ::domain::host::WidenRejection::widen(rejection)
             }
-        )*
+        }
     })
 }
 

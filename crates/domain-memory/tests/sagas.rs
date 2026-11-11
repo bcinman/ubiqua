@@ -44,7 +44,7 @@ pub struct Logging;
 
 /// Notes `one` and `two`, each undone by a note, then waits for `go` and, if told to, ends
 /// with a refused step.
-#[domain::saga(key = LogId, rejects(No), sends(Refuse))]
+#[domain::saga(key = LogId, rejects(No))]
 #[derive(Debug)]
 pub struct Steps {
     pub tag: String,

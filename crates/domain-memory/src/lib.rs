@@ -73,62 +73,96 @@ use domain::{
     Model, Receipt, SendError, Source, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use telemetry::{Hub, Traced};
 use views::{AnyBox, Consumer, Delivery, ViewHost};
 
-/// Called when there's work for `Memory::run_due`.
+/// Called when there's work for `Memory::run_due`, from any thread, such as one answering a call.
 #[cfg(not(target_arch = "wasm32"))]
-type Hook = Arc<dyn Fn() + Send + Sync>;
+type Hook = Box<dyn Fn() + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
-type Hook = Arc<dyn Fn()>;
+type Hook = Box<dyn Fn()>;
+
+/// What wakes `run_due`: work from this thread, or an external call answered on another.
+#[derive(Default)]
+struct Waking {
+    /// `run_due` should look again before it stops.
+    again: AtomicBool,
+    hook: OnceLock<Hook>,
+}
+
+impl Waking {
+    fn wake(&self) {
+        self.again.store(true, Ordering::SeqCst);
+        if let Some(hook) = self.hook.get() {
+            hook();
+        }
+    }
+}
+
+/// Makes command ids. Shared with a [`Runtime`]'s handles, so they make ids without a job.
+pub(crate) struct CommandIds {
+    prefix: String,
+    sent: AtomicU64,
+}
+
+impl CommandIds {
+    fn new(prefix: String) -> Arc<Self> {
+        Arc::new(Self { prefix, sent: AtomicU64::new(0) })
+    }
+
+    pub(crate) fn next(&self) -> CommandId {
+        let n = self.sent.fetch_add(1, Ordering::Relaxed) + 1;
+        CommandId::new(format!("{}-{n}", self.prefix))
+    }
+}
 
 /// Reads one aggregate's history as deliveries, skipping the `(stream, seq)`s `keep` refuses.
-type HistoryFn = fn(&Memory, &dyn Fn(&str, u64) -> bool) -> Vec<Arc<Delivery>>;
+type HistoryFn = fn(&Memory, &dyn Fn(&str, u64) -> bool) -> Vec<Rc<Delivery>>;
 
 /// The aggregate an id belongs to.
 pub(crate) type AggregateOf<I> = <I as AggregateId>::Aggregate;
 type StateOf<I> = <AggregateOf<I> as Aggregate>::State;
 type EventOf<I> = <AggregateOf<I> as Aggregate>::Event;
 
-/// Every aggregate's instances, in memory. Share it between threads with an `Arc`.
+/// Every aggregate's instances, in memory. One thread uses it: hand it to a [`Runtime`] to use
+/// it from others.
 pub struct Memory {
-    stores: Mutex<HashMap<TypeId, Box<dyn AnyStore>>>,
-    clock: Box<dyn Clock>,
-    sent: AtomicU64,
-    /// Starts every command id `new_command_id` makes.
-    id_prefix: String,
-    store: Option<Arc<dyn Store>>,
+    stores: RefCell<HashMap<TypeId, Box<dyn AnyStore>>>,
+    clock: Box<dyn Fn() -> Timestamp>,
+    ids: Arc<CommandIds>,
+    store: Option<Rc<dyn Store>>,
     /// The views that read each aggregate, by the aggregate's `TypeId`.
-    consumers: HashMap<TypeId, Vec<Arc<dyn Consumer>>>,
-    /// Each view's `Arc<ViewHost<V>>`, by the view's `TypeId`.
+    consumers: HashMap<TypeId, Vec<Rc<dyn Consumer>>>,
+    /// Each view's `Rc<ViewHost<V>>`, by the view's `TypeId`.
     views: HashMap<TypeId, AnyBox>,
     /// The same hosts, for other views that read them.
-    view_consumers: HashMap<TypeId, Arc<dyn Consumer>>,
+    view_consumers: HashMap<TypeId, Rc<dyn Consumer>>,
     /// How to read each registered aggregate's history, for views added later.
     histories: HashMap<TypeId, HistoryFn>,
     /// Policies, projections and saga runs: what `run_due` runs.
-    runners: Vec<Arc<dyn policies::PolicyRun>>,
+    runners: Vec<Rc<dyn policies::PolicyRun>>,
     /// Each projection's and saga's host, by its `TypeId`; `()` for each policy.
     hosts: HashMap<TypeId, AnyBox>,
     /// Scheduled commands, by stream and command id.
-    schedules: Mutex<HashMap<(String, String), ScheduleRow>>,
+    schedules: RefCell<HashMap<(String, String), ScheduleRow>>,
     /// How to send each kind of scheduled command, by `Aggregate.Command`.
-    firers: Mutex<HashMap<String, schedules::FireFn>>,
+    firers: RefCell<HashMap<String, schedules::FireFn>>,
     /// Schedules that can't fire yet: their command isn't hosted or doesn't decode.
-    stuck: Mutex<HashSet<(String, String)>>,
+    stuck: RefCell<HashSet<(String, String)>>,
     /// Adapters for external calls, by the call's `TypeId`.
     answers: HashMap<TypeId, calls::AnswerFn>,
     stub_calls: bool,
-    stubbed: Mutex<std::collections::VecDeque<StubbedCall>>,
-    hooks: Mutex<Vec<Hook>>,
-    /// `run_due` is running, and whether it should look again before it stops.
-    running: AtomicBool,
-    again: AtomicBool,
+    stubbed: RefCell<std::collections::VecDeque<StubbedCall>>,
+    waking: Arc<Waking>,
+    /// `run_due` is running.
+    running: Cell<bool>,
     /// Hands what happens to telemetry observers.
-    hub: Arc<Hub>,
+    hub: Rc<Hub>,
     /// What telemetry shows of the model: its parts, the names of its sources, how to read each
     /// aggregate and view, and how to host its views again for a replay.
     parts: Vec<domain::telemetry::Part>,
@@ -137,9 +171,6 @@ pub struct Memory {
     view_keys: HashMap<&'static str, fn(&Memory) -> Vec<domain::telemetry::ViewKey>>,
     replay_views: Vec<fn(&mut Memory)>,
 }
-
-trait Clock: Fn() -> Timestamp + MaybeSend + MaybeSync {}
-impl<F: Fn() -> Timestamp + MaybeSend + MaybeSync> Clock for F {}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for Memory {
@@ -156,12 +187,11 @@ impl Memory {
     }
 
     /// Uses `clock` for the time each command is decided.
-    pub fn with_clock(clock: impl Fn() -> Timestamp + MaybeSend + MaybeSync + 'static) -> Self {
+    pub fn with_clock(clock: impl Fn() -> Timestamp + 'static) -> Self {
         Self {
-            stores: Mutex::default(),
+            stores: RefCell::default(),
             clock: Box::new(clock),
-            sent: AtomicU64::new(0),
-            id_prefix: "memory".into(),
+            ids: CommandIds::new("memory".into()),
             store: None,
             consumers: HashMap::new(),
             views: HashMap::new(),
@@ -169,16 +199,15 @@ impl Memory {
             histories: HashMap::new(),
             runners: Vec::new(),
             hosts: HashMap::new(),
-            schedules: Mutex::default(),
-            firers: Mutex::default(),
-            stuck: Mutex::default(),
+            schedules: RefCell::default(),
+            firers: RefCell::default(),
+            stuck: RefCell::default(),
             answers: HashMap::new(),
             stub_calls: false,
-            stubbed: Mutex::default(),
-            hooks: Mutex::default(),
-            running: AtomicBool::new(false),
-            again: AtomicBool::new(false),
-            hub: Arc::default(),
+            stubbed: RefCell::default(),
+            waking: Arc::default(),
+            running: Cell::new(false),
+            hub: Rc::default(),
             parts: Vec::new(),
             names: HashMap::new(),
             traced: HashMap::new(),
@@ -197,17 +226,18 @@ impl Memory {
     /// failed policy's retry; call it again then, and whenever the model has new work for a
     /// policy. A [`Runtime`] does this on its thread.
     ///
-    /// Safe to call from any thread, and from inside a policy: a call while it's already running
-    /// makes the running one look again.
-    pub fn run_due(self: &Arc<Self>) -> Option<Timestamp> {
-        if self.running.swap(true, Ordering::SeqCst) {
-            self.again.store(true, Ordering::SeqCst);
+    /// Safe to call from inside a policy: a call while it's already running makes the running
+    /// one look again.
+    pub fn run_due(self: &Rc<Self>) -> Option<Timestamp> {
+        let again = &self.waking.again;
+        if self.running.replace(true) {
+            again.store(true, Ordering::SeqCst);
             return None;
         }
-        let waker = waker_for(self);
+        let waker = waker_for(&self.waking);
         let mut retry;
         loop {
-            self.again.store(false, Ordering::SeqCst);
+            again.store(false, Ordering::SeqCst);
             self.fire_due();
             retry = None;
             for runner in &self.runners {
@@ -215,23 +245,25 @@ impl Memory {
                     retry = Some(retry.map_or(at, |r: Timestamp| r.min(at)));
                 }
             }
-            if self.again.load(Ordering::SeqCst) {
-                continue;
-            }
-            self.running.store(false, Ordering::SeqCst);
-            // A wake between the check and the release would be lost: look once more.
-            if !self.again.load(Ordering::SeqCst) || self.running.swap(true, Ordering::SeqCst) {
+            if !again.load(Ordering::SeqCst) {
                 break;
             }
         }
+        self.running.set(false);
         [retry, self.next_schedule()].into_iter().flatten().min()
     }
 
-    /// Calls `hook` whenever there's new work for [`run_due`](Self::run_due): an event for a
-    /// policy, an answered call, a new schedule. It should only arrange for `run_due` to be
-    /// called, such as by waking a thread.
+    /// Calls `hook`, from any thread, whenever there's new work for [`run_due`](Self::run_due):
+    /// an event for a policy, an answered call, a new schedule. It should only arrange for
+    /// `run_due` to be called, such as by waking a thread. One hook per memory.
     pub(crate) fn on_wake(&self, hook: impl Fn() + MaybeSend + MaybeSync + 'static) {
-        lock(&self.hooks).push(Arc::new(hook));
+        assert!(self.waking.hook.set(Box::new(hook)).is_ok(), "a memory runs in one runtime");
+    }
+
+    /// Its command ids, for a runtime's handles.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn command_ids(&self) -> Arc<CommandIds> {
+        self.ids.clone()
     }
 
     /// Runs `f` in one store batch, so what it writes reaches the store together. Returns what
@@ -253,9 +285,7 @@ impl Memory {
     }
 
     fn wake(&self) {
-        self.again.store(true, Ordering::SeqCst);
-        let hooks = lock(&self.hooks).clone();
-        hooks.iter().for_each(|hook| hook());
+        self.waking.wake();
     }
 
     /// Keeps events, receipts and views in `store` too, so the next run picks up where this one
@@ -266,15 +296,15 @@ impl Memory {
     /// After `with` or a command, or when the store fails.
     pub fn persist_to(mut self, store: impl Store + 'static) -> Self {
         assert!(
-            self.views.is_empty() && self.histories.is_empty() && lock(&self.stores).is_empty(),
+            self.views.is_empty() && self.histories.is_empty() && self.stores.borrow_mut().is_empty(),
             "call `persist_to` before `with` and before sending commands"
         );
         let session = store.new_session().unwrap_or_else(|e| panic!("the store failed: {e}"));
         let schedules = store.schedules().unwrap_or_else(|e| panic!("the store failed: {e}"));
-        self.id_prefix = format!("s{session}");
-        *lock(&self.schedules) =
+        self.ids = CommandIds::new(format!("s{session}"));
+        *self.schedules.borrow_mut() =
             schedules.into_iter().map(|row| ((row.stream.clone(), row.command_id.clone()), row)).collect();
-        self.store = Some(Arc::new(store));
+        self.store = Some(Rc::new(store));
         self
     }
 
@@ -301,7 +331,7 @@ impl Memory {
     /// # Panics
     /// When `V` isn't in a model passed to [`with`](Self::with).
     pub fn view<V: Apply>(&self) -> ViewReader<V> {
-        let host = self.views.get(&TypeId::of::<V>()).and_then(|host| (**host).downcast_ref::<Arc<ViewHost<V>>>());
+        let host = self.views.get(&TypeId::of::<V>()).and_then(|host| (**host).downcast_ref::<Rc<ViewHost<V>>>());
         match host {
             Some(host) => ViewReader { host: host.clone() },
             None => panic!("{} isn't hosted here: list it in a model's `views(..)` and use `Memory::with`", V::NAME),
@@ -319,8 +349,7 @@ impl Memory {
 
     /// A command id no other command sent here has used.
     pub fn new_command_id(&self) -> CommandId {
-        let n = self.sent.fetch_add(1, Ordering::Relaxed) + 1;
-        CommandId::new(format!("{}-{n}", self.id_prefix))
+        self.ids.next()
     }
 
     /// Like [`send`](Self::send), under your own command id. Sending the same id again returns the
@@ -382,7 +411,7 @@ impl Memory {
     {
         let unavailable = |reason: String| SendError::Unavailable { command_id: command_id.clone(), reason };
         let instance = self.instance(id);
-        let mut instance = lock(&instance);
+        let mut instance = instance.borrow_mut();
         self.load(id, &mut instance).map_err(unavailable)?;
 
         if let Some(stored) = instance.receipts.get(&command_id) {
@@ -525,7 +554,7 @@ impl Memory {
         })
     }
 
-    /// Stores the new state and events, and queues them for the views, under the instance's lock.
+    /// Stores the new state and events, and queues them for the views.
     fn commit<A: Aggregate>(
         &self,
         id: &A::Id,
@@ -544,7 +573,7 @@ impl Memory {
         let consumers = self.consumers.get(&TypeId::of::<A>()).map_or(&[][..], |c| &c[..]);
         if !consumers.is_empty() {
             for envelope in &recorded {
-                let delivery = Arc::new(Delivery { history, ..delivery_of::<A>(id, envelope) });
+                let delivery = Rc::new(Delivery { history, ..delivery_of::<A>(id, envelope) });
                 consumers.iter().for_each(|consumer| consumer.push(delivery.clone()));
             }
         }
@@ -591,7 +620,7 @@ impl Memory {
         AggregateOf<I>: Evolve,
     {
         let instance = self.instance(id);
-        let mut instance = lock(&instance);
+        let mut instance = instance.borrow_mut();
         self.load(id, &mut instance).unwrap_or_else(|e| panic!("{e}"));
         f(&instance)
     }
@@ -609,7 +638,7 @@ impl Memory {
         let at = (self.clock)();
         {
             let instance = self.instance(id);
-            let mut instance = lock(&instance);
+            let mut instance = instance.borrow_mut();
             self.load(id, &mut instance).unwrap_or_else(|e| panic!("{e}"));
             let mut state = instance.state.clone();
             let mut recorded = Vec::new();
@@ -626,7 +655,7 @@ impl Memory {
     }
 
     /// Every event `A` has recorded that `keep` accepts, as deliveries.
-    fn history<A: Aggregate>(&self, keep: &dyn Fn(&str, u64) -> bool) -> Vec<Arc<Delivery>> {
+    fn history<A: Aggregate>(&self, keep: &dyn Fn(&str, u64) -> bool) -> Vec<Rc<Delivery>> {
         if let Some(store) = &self.store {
             // Read the store: it has every instance, loaded or not.
             let rows = store.history(A::NAME, keep).unwrap_or_else(|e| panic!("reading {} failed: {e}", A::NAME));
@@ -634,18 +663,18 @@ impl Memory {
                 .iter()
                 .map(|row| {
                     let (id, envelope) = decode_event::<A>(row).unwrap_or_else(|e| panic!("{e}"));
-                    Arc::new(delivery_of::<A>(&id, &envelope))
+                    Rc::new(delivery_of::<A>(&id, &envelope))
                 })
                 .collect();
         }
-        let stores = lock(&self.stores);
+        let stores = self.stores.borrow_mut();
         let Some(store) = stores.get(&TypeId::of::<A>()) else { return Vec::new() };
         let store = store.as_any().downcast_ref::<Instances<A>>().expect("store matches its TypeId");
         let mut history = Vec::new();
         for (id, instance) in &store.instances {
-            for envelope in &lock(instance).events {
+            for envelope in &instance.borrow().events {
                 if keep(envelope.stream.as_str(), envelope.seq) {
-                    history.push(Arc::new(delivery_of::<A>(id, envelope)));
+                    history.push(Rc::new(delivery_of::<A>(id, envelope)));
                 }
             }
         }
@@ -668,17 +697,17 @@ impl Memory {
                 .into_iter()
                 .map(|(stream, version)| (StreamId::from(stream), version))
                 .collect(),
-            None => lock(&self.stores).values().flat_map(|store| store.versions()).collect(),
+            None => self.stores.borrow_mut().values().flat_map(|store| store.versions()).collect(),
         };
         versions.sort();
         Ok(versions)
     }
 
-    fn instance<I: AggregateId>(&self, id: &I) -> Arc<Mutex<Instance<AggregateOf<I>>>>
+    fn instance<I: AggregateId>(&self, id: &I) -> Rc<RefCell<Instance<AggregateOf<I>>>>
     where
         AggregateOf<I>: Evolve,
     {
-        let mut stores = lock(&self.stores);
+        let mut stores = self.stores.borrow_mut();
         let store = stores
             .entry(TypeId::of::<AggregateOf<I>>())
             .or_insert_with(|| Box::new(Instances::<AggregateOf<I>>::default()));
@@ -719,23 +748,21 @@ pub(crate) fn reason(panic: &(dyn Any + Send)) -> String {
     format!("panicked: {}", message.unwrap_or("no message"))
 }
 
-/// Wakes `memory` when a call a policy waits on is answered.
+/// Wakes `run_due` when a call a policy waits on is answered, on whichever thread answers it.
 #[cfg(not(target_arch = "wasm32"))]
-fn waker_for(memory: &Arc<Memory>) -> std::task::Waker {
-    struct Wake(std::sync::Weak<Memory>);
+fn waker_for(waking: &Arc<Waking>) -> std::task::Waker {
+    struct Wake(Arc<Waking>);
     impl std::task::Wake for Wake {
         fn wake(self: Arc<Self>) {
-            if let Some(memory) = self.0.upgrade() {
-                memory.wake();
-            }
+            self.0.wake();
         }
     }
-    std::task::Waker::from(Arc::new(Wake(Arc::downgrade(memory))))
+    std::task::Waker::from(Arc::new(Wake(waking.clone())))
 }
 
 /// On wasm nothing crosses threads; the page calls `run_due` again.
 #[cfg(target_arch = "wasm32")]
-fn waker_for(_: &Arc<Memory>) -> std::task::Waker {
+fn waker_for(_: &Arc<Waking>) -> std::task::Waker {
     std::task::Waker::noop().clone()
 }
 
@@ -748,7 +775,8 @@ pub(crate) fn json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, St
     serde_json::to_string(value).map_err(|e| format!("{} doesn't encode as JSON: {e}", std::any::type_name::<T>()))
 }
 
-/// A poisoned lock only means a decision panicked before it committed; the data is consistent.
+/// Locks what's shared with other threads: subscription queues and the telemetry hub. A
+/// poisoned lock only means a reader's callback panicked; the data is consistent.
 fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -769,7 +797,7 @@ impl<A: Aggregate> Default for Instance<A> {
 }
 
 struct Instances<A: Aggregate> {
-    instances: HashMap<A::Id, Arc<Mutex<Instance<A>>>>,
+    instances: HashMap<A::Id, Rc<RefCell<Instance<A>>>>,
 }
 
 impl<A: Aggregate> Default for Instances<A> {
@@ -778,7 +806,7 @@ impl<A: Aggregate> Default for Instances<A> {
     }
 }
 
-trait AnyStore: MaybeSend + MaybeSync {
+trait AnyStore {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn versions(&self) -> Vec<(StreamId, u64)>;
@@ -802,13 +830,13 @@ impl<A: Evolve> AnyStore for Instances<A> {
     fn versions(&self) -> Vec<(StreamId, u64)> {
         self.instances
             .iter()
-            .map(|(id, instance)| (StreamId::of::<A>(id), lock(instance).events.len() as u64))
+            .map(|(id, instance)| (StreamId::of::<A>(id), instance.borrow().events.len() as u64))
             .filter(|(_, version)| *version > 0)
             .collect()
     }
 }
 
-trait AnyReceipt: MaybeSend + MaybeSync {
+trait AnyReceipt {
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -883,7 +911,7 @@ impl Registry for Registrar<'_> {
             }
         }
         history.sort_by(|a, b| a.order().cmp(&b.order()));
-        let host = Arc::new(host);
+        let host = Rc::new(host);
         history.into_iter().for_each(|delivery| host.push(delivery));
         host.drain();
 

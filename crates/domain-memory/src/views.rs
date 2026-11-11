@@ -11,17 +11,22 @@ use domain::{
     View, ViewCx,
 };
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
+/// A boxed value of any type, kept on the memory's thread.
+pub(crate) type AnyBox = Box<dyn Any>;
+
 /// A boxed value of any type that can cross threads where there are threads.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type AnyBox = Box<dyn Any + Send + Sync>;
+pub(crate) type SendBox = Box<dyn Any + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
-pub(crate) type AnyBox = Box<dyn Any>;
+pub(crate) type SendBox = Box<dyn Any>;
 
 /// Called when items arrive on a subscription, with no lock of the view held.
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,13 +67,7 @@ pub(crate) struct Delivery {
 }
 
 impl Delivery {
-    pub fn new<T: Any + MaybeSend + MaybeSync>(
-        source: TypeId,
-        stream: StreamId,
-        seq: u64,
-        at: Timestamp,
-        payload: T,
-    ) -> Self {
+    pub fn new<T: Any>(source: TypeId, stream: StreamId, seq: u64, at: Timestamp, payload: T) -> Self {
         Self { source, stream, seq, at, payload: Box::new(payload), history: false }
     }
 
@@ -79,9 +78,9 @@ impl Delivery {
 }
 
 /// A view as the commit path and other views see it.
-pub(crate) trait Consumer: MaybeSend + MaybeSync {
+pub(crate) trait Consumer {
     /// Queue a delivery. Called while the source is locked, so each source's order holds.
-    fn push(&self, delivery: Arc<Delivery>);
+    fn push(&self, delivery: Rc<Delivery>);
     /// Apply every queued delivery in order, then let the views that read this one apply what it emitted.
     fn drain(&self);
     /// Drain the views this one reads, then this one, so a read sees everything already committed.
@@ -89,9 +88,9 @@ pub(crate) trait Consumer: MaybeSend + MaybeSync {
     /// How far this view has applied `stream`, directly or through the views it reads.
     fn applied(&self, stream: &StreamId) -> Option<u64>;
     /// Every entry this view has emitted, as deliveries for a view added later that reads it.
-    fn history(&self) -> Vec<Arc<Delivery>>;
+    fn history(&self) -> Vec<Rc<Delivery>>;
     /// Deliver this view's emitted entries to `consumer` from now on.
-    fn add_downstream(&self, consumer: Arc<dyn Consumer>);
+    fn add_downstream(&self, consumer: Rc<dyn Consumer>);
 }
 
 type RouteFn<V> = fn(&Delivery) -> Option<(<V as Keyed>::Key, <V as Keyed>::Input)>;
@@ -104,13 +103,13 @@ fn route_of<V: Consumes<S> + Apply, S: Source>(delivery: &Delivery) -> Option<(V
 pub(crate) struct ViewHost<V: Apply> {
     routes: HashMap<TypeId, RouteFn<V>>,
     /// The views this one reads.
-    upstream: Vec<Arc<dyn Consumer>>,
+    upstream: Vec<Rc<dyn Consumer>>,
     /// The views that read this one.
-    downstream: Mutex<Vec<Arc<dyn Consumer>>>,
-    inbox: Mutex<VecDeque<Arc<Delivery>>>,
-    data: Mutex<Data<V>>,
-    store: Option<Arc<dyn Store>>,
-    hub: Arc<Hub>,
+    downstream: RefCell<Vec<Rc<dyn Consumer>>>,
+    inbox: RefCell<VecDeque<Rc<Delivery>>>,
+    data: RefCell<Data<V>>,
+    store: Option<Rc<dyn Store>>,
+    hub: Rc<Hub>,
 }
 
 struct Data<V: Apply> {
@@ -134,7 +133,7 @@ impl<V: Apply> Default for Unsaved<V> {
 }
 
 struct Key<V: Apply> {
-    state: Option<Arc<V::State>>,
+    state: Option<Rc<V::State>>,
     entries: Vec<Entry<V>>,
     feeds: Vec<Weak<Queue<Frame<V>>>>,
     watches: Vec<Weak<Queue<Snapshot<V>>>>,
@@ -153,13 +152,13 @@ impl<V: Apply> Key<V> {
 }
 
 impl<V: Apply> ViewHost<V> {
-    pub fn new(store: Option<Arc<dyn Store>>, hub: Arc<Hub>) -> Self {
+    pub fn new(store: Option<Rc<dyn Store>>, hub: Rc<Hub>) -> Self {
         Self {
             routes: HashMap::new(),
             upstream: Vec::new(),
-            downstream: Mutex::default(),
-            inbox: Mutex::default(),
-            data: Mutex::new(Data { keys: HashMap::new(), progress: HashMap::new(), unsaved: Unsaved::default() }),
+            downstream: RefCell::default(),
+            inbox: RefCell::default(),
+            data: RefCell::new(Data { keys: HashMap::new(), progress: HashMap::new(), unsaved: Unsaved::default() }),
             store,
             hub,
         }
@@ -175,10 +174,10 @@ impl<V: Apply> ViewHost<V> {
                 panic!("{}'s stored {what} doesn't decode ({e}); change its version to rebuild it", V::NAME)
             })
         }
-        let data = self.data.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let data = self.data.get_mut();
         for row in rows.keys {
             let key: V::Key = decode::<V, _>("key", &row.key);
-            data.keys.entry(key).or_default().state = Some(Arc::new(decode::<V, _>("state", &row.state)));
+            data.keys.entry(key).or_default().state = Some(Rc::new(decode::<V, _>("state", &row.state)));
         }
         let mut entries = rows.entries;
         entries.sort_by_key(|row| row.cursor);
@@ -187,7 +186,7 @@ impl<V: Apply> ViewHost<V> {
             let entry = Entry {
                 cursor: Cursor::new(row.cursor),
                 event: decode::<V, _>("event", &row.event),
-                state: Arc::new(decode::<V, _>("state", &row.state)),
+                state: decode::<V, _>("state", &row.state),
                 stream: StreamId::from(row.stream),
                 seq: row.seq,
                 at: Timestamp::from_millis(row.at),
@@ -199,7 +198,7 @@ impl<V: Apply> ViewHost<V> {
 
     /// How far the view has applied each source stream.
     pub fn progress(&self) -> HashMap<StreamId, u64> {
-        lock(&self.data).progress.clone()
+        self.data.borrow_mut().progress.clone()
     }
 
     /// Writes the unsaved changes. If the store fails they stay unsaved and go with the next save;
@@ -229,7 +228,7 @@ impl<V: Apply> ViewHost<V> {
                     key: encode::<V, _>(key),
                     cursor: entry.cursor.seq(),
                     event: encode::<V, _>(&entry.event),
-                    state: encode::<V, _>(&*entry.state),
+                    state: encode::<V, _>(&entry.state),
                     stream: entry.stream.to_string(),
                     seq: entry.seq,
                     at: entry.at.as_millis(),
@@ -249,7 +248,7 @@ impl<V: Apply> ViewHost<V> {
         self.routes.insert(TypeId::of::<S>(), route_of::<V, S>);
     }
 
-    pub fn add_upstream(&mut self, upstream: Arc<dyn Consumer>) {
+    pub fn add_upstream(&mut self, upstream: Rc<dyn Consumer>) {
         self.upstream.push(upstream);
     }
 
@@ -269,9 +268,9 @@ impl<V: Apply> ViewHost<V> {
             let emitted: Vec<V::Event> = auto.into_iter().chain(cx.into_emitted()).collect();
 
             let changed = before.as_deref() != Some(&state);
-            let state = Arc::new(state);
+            let state = Rc::new(state);
             let stream = StreamId::new(V::NAME, &key);
-            let downstream = lock(&self.downstream);
+            let downstream = self.downstream.borrow_mut();
             let k = data.keys.entry(key.clone()).or_default();
             k.state = Some(state.clone());
             let traced = (changed || !emitted.is_empty()) && self.hub.observed();
@@ -293,13 +292,13 @@ impl<V: Apply> ViewHost<V> {
                 if !downstream.is_empty() {
                     let payload: (V::Key, V::Event, V::State) = (key.clone(), event.clone(), (*state).clone());
                     let next = Delivery::new(TypeId::of::<V>(), stream.clone(), cursor.seq(), delivery.at, payload);
-                    let next = Arc::new(Delivery { history: delivery.history, ..next });
+                    let next = Rc::new(Delivery { history: delivery.history, ..next });
                     downstream.iter().for_each(|consumer| consumer.push(next.clone()));
                 }
                 let entry = Entry {
                     cursor,
                     event,
-                    state: state.clone(),
+                    state: (*state).clone(),
                     stream: delivery.stream.clone(),
                     seq: delivery.seq,
                     at: delivery.at,
@@ -329,7 +328,7 @@ impl<V: Apply> ViewHost<V> {
 
     fn read<T>(&self, f: impl FnOnce(&mut Data<V>) -> T) -> T {
         self.catch_up();
-        f(&mut lock(&self.data))
+        f(&mut self.data.borrow_mut())
     }
 
     /// Every key with a state, by stream.
@@ -350,27 +349,27 @@ impl<V: Apply> ViewHost<V> {
 }
 
 impl<V: Apply> Consumer for ViewHost<V> {
-    fn push(&self, delivery: Arc<Delivery>) {
-        lock(&self.inbox).push_back(delivery);
+    fn push(&self, delivery: Rc<Delivery>) {
+        self.inbox.borrow_mut().push_back(delivery);
     }
 
     fn drain(&self) {
         let mut wakeups = Vec::new();
         {
             // Holding `data` makes this the only drainer; a delivery leaves the inbox once applied.
-            let mut data = lock(&self.data);
+            let mut data = self.data.borrow_mut();
             loop {
-                let next = lock(&self.inbox).front().cloned();
+                let next = self.inbox.borrow_mut().front().cloned();
                 let Some(delivery) = next else { break };
                 self.apply_one(&mut data, &delivery, &mut wakeups);
-                lock(&self.inbox).pop_front();
+                self.inbox.borrow_mut().pop_front();
             }
             self.save(&mut data);
         }
         // Subscribers run outside the lock, so they may read this view or send commands.
         wakeups.into_iter().for_each(Wakeup::wake);
         self.hub.flush();
-        let downstream = lock(&self.downstream).clone();
+        let downstream = self.downstream.borrow_mut().clone();
         downstream.iter().for_each(|consumer| consumer.drain());
     }
 
@@ -380,33 +379,33 @@ impl<V: Apply> Consumer for ViewHost<V> {
     }
 
     fn applied(&self, stream: &StreamId) -> Option<u64> {
-        let own = lock(&self.data).progress.get(stream).copied();
+        let own = self.data.borrow_mut().progress.get(stream).copied();
         // A stream reaches this view along several paths; it's applied as far as the slowest one.
         own.into_iter().chain(self.upstream.iter().filter_map(|upstream| upstream.applied(stream))).min()
     }
 
-    fn history(&self) -> Vec<Arc<Delivery>> {
-        let data = lock(&self.data);
+    fn history(&self) -> Vec<Rc<Delivery>> {
+        let data = self.data.borrow_mut();
         let mut history = Vec::new();
         for (key, k) in &data.keys {
             let stream = StreamId::new(V::NAME, key);
             for entry in &k.entries {
-                let payload: (V::Key, V::Event, V::State) = (key.clone(), entry.event.clone(), (*entry.state).clone());
+                let payload: (V::Key, V::Event, V::State) = (key.clone(), entry.event.clone(), entry.state.clone());
                 let delivery = Delivery::new(TypeId::of::<V>(), stream.clone(), entry.cursor.seq(), entry.at, payload);
-                history.push(Arc::new(delivery));
+                history.push(Rc::new(delivery));
             }
         }
         history
     }
 
-    fn add_downstream(&self, consumer: Arc<dyn Consumer>) {
-        lock(&self.downstream).push(consumer);
+    fn add_downstream(&self, consumer: Rc<dyn Consumer>) {
+        self.downstream.borrow_mut().push(consumer);
     }
 }
 
 /// Reads one view: state, emitted events, live feeds. Get it with [`Memory::view`](crate::Memory::view).
 pub struct ViewReader<V: Apply> {
-    pub(crate) host: Arc<ViewHost<V>>,
+    pub(crate) host: Rc<ViewHost<V>>,
 }
 
 impl<V: Apply> Clone for ViewReader<V> {
@@ -491,7 +490,7 @@ pub type Watch<V> = Subscription<Snapshot<V>>;
 pub struct Subscription<T> {
     pub(crate) queue: Arc<Queue<T>>,
     /// Dropped with the subscription, such as to tell a server to stop sending.
-    pub(crate) _guard: Option<AnyBox>,
+    pub(crate) _guard: Option<SendBox>,
 }
 
 /// A subscription you fill yourself, for items that arrive from elsewhere, such as a server.
@@ -503,7 +502,7 @@ pub fn channel<T>(guard: impl Any + MaybeSend + MaybeSync) -> (Publisher<T>, Sub
 
 /// Fills a [`channel`]'s subscription.
 pub struct Publisher<T> {
-    queue: Weak<Queue<T>>,
+    pub(crate) queue: Weak<Queue<T>>,
 }
 
 impl<T> Clone for Publisher<T> {

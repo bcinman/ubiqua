@@ -19,8 +19,8 @@
 //! #[api(commands(Open))]
 //! pub struct DoorApi;
 //!
-//! let memory = domain_memory::Memory::new().with::<Doors>();
-//! let client = domain_client::Client::<DoorApi>::in_process(domain_memory::Runtime::inline(memory));
+//! let runtime = domain_memory::Runtime::spawn(|| domain_memory::Memory::new().with::<Doors>());
+//! let client = domain_client::Client::<DoorApi>::in_process(runtime);
 //! client.send(&DoorId::new("front"), Close); // `DoorApi` doesn't let clients send `Close`
 //! ```
 //!

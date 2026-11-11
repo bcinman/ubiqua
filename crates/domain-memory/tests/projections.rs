@@ -1,5 +1,6 @@
 use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Position, Projection, Timestamp};
 use domain_memory::{Memory, Project, ProjectionError, ProjectionInput};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -69,7 +70,7 @@ fn a_new_projection_gets_all_of_history_in_order_and_in_batches() {
     }
     let tally = Tally::default();
     let (written, batches) = (tally.rows.clone(), tally.batches.clone());
-    let memory = Arc::new(memory.projection(tally));
+    let memory = Rc::new(memory.projection(tally));
     memory.run_due();
     let seqs: Vec<u64> = written.lock().unwrap().iter().map(|(_, seq)| *seq).collect();
     assert_eq!(seqs, [1, 2, 3, 4, 5]);
@@ -84,7 +85,7 @@ fn a_failing_key_runs_again_later_while_other_keys_carry_on() {
     let (failing, view) = (tally.failing.clone(), Tally { rows: tally.rows.clone(), ..Tally::default() });
     failing.store(true, Ordering::SeqCst);
     let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::SeqCst)));
-    let memory = Arc::new(memory.with::<Counting>().projection(tally));
+    let memory = Rc::new(memory.with::<Counting>().projection(tally));
 
     memory.send(&c("bad"), Bump).unwrap();
     memory.send(&c("good"), Bump).unwrap();
@@ -106,7 +107,7 @@ fn a_failing_key_runs_again_later_while_other_keys_carry_on() {
 
 #[test]
 fn caught_up_tells_when_a_command_is_written() {
-    let memory = Arc::new(Memory::new().with::<Counting>().projection(Tally::default()));
+    let memory = Rc::new(Memory::new().with::<Counting>().projection(Tally::default()));
     let receipt = memory.send(&c("a"), Bump).unwrap();
     assert!(memory.caught_up::<Tally>(&receipt).is_err());
     memory.run_due();

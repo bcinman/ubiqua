@@ -3,7 +3,7 @@
 Run the model on a server, and apps elsewhere use it through the same `Client`.
 
 ```rust
-let bank = Runtime::spawn(Memory::new().with::<Bank>());
+let bank = Runtime::spawn(|| Memory::new().with::<Bank>());
 let server = Server::<BankApi>::new(bank)
     .sessions(|token| users.check(token))       // Option<User>
     .listen("0.0.0.0:7878")?;
@@ -109,12 +109,12 @@ A TLS proxy in front of a plain server works too.
 One app runs the model and serves it to others:
 
 ```rust
-let bank = Runtime::spawn(Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>());
+let bank = Runtime::spawn(|| Memory::new().persist_to(Sqlite::open("bank.db").unwrap()).with::<Bank>());
 let me = Client::<BankApi>::in_process(bank.clone()).acting_as(User("sam".into()));
 let _server = Server::<BankApi>::new(bank).sessions(check).listen("0.0.0.0:7878")?;
 ```
 
-The app's commands and every connection's queue for the same runtime thread.
+The app's commands and reads, and every connection's, queue for the same runtime thread.
 
 ## Serve telemetry
 

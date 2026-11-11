@@ -6,14 +6,15 @@ use crate::calls::BoxFuture;
 use crate::policies::{Next, PolicyRun};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
-use crate::{HostSources, Memory, Registrar, lock, reason};
+use crate::{HostSources, Memory, Registrar, reason};
 use domain::host::{Consumes, Keyed, SourcePayload, Sources};
-use domain::{MaybeSend, NotCaughtUp, Position, Projection, Source, StreamId, Timestamp};
+use domain::{NotCaughtUp, Position, Projection, Source, StreamId, Timestamp};
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ pub trait Project: Projection {
         &self,
         key: &Self::Key,
         batch: Vec<ProjectionInput<Self>>,
-    ) -> impl Future<Output = Result<(), ProjectionError>> + MaybeSend;
+    ) -> impl Future<Output = Result<(), ProjectionError>>;
 }
 
 /// Why a projection's handler failed. Any error converts with `?`.
@@ -47,7 +48,7 @@ pub struct ProjectionInput<P: Keyed> {
     pub stream: StreamId,
     pub seq: u64,
     pub at: Timestamp,
-    delivery: Arc<Delivery>,
+    delivery: Rc<Delivery>,
 }
 
 impl<P: Keyed> ProjectionInput<P> {
@@ -95,12 +96,12 @@ fn route_of<P: Consumes<S>, S: Source>(delivery: &Delivery) -> Option<(P::Key, P
 }
 
 pub(crate) struct ProjectionHost<P: Project> {
-    projection: Arc<P>,
+    projection: Rc<P>,
     routes: HashMap<TypeId, RouteFn<P>>,
-    inbox: Mutex<Inbox<P>>,
+    inbox: RefCell<Inbox<P>>,
     /// Each key's batch in flight, and its retries.
-    running: Mutex<HashMap<P::Key, KeyRun>>,
-    store: Option<Arc<dyn Store>>,
+    running: RefCell<HashMap<P::Key, KeyRun>>,
+    store: Option<Rc<dyn Store>>,
 }
 
 struct Inbox<P: Keyed> {
@@ -139,7 +140,7 @@ impl<P: Project> ProjectionHost<P> {
 
     /// Takes a written batch off its key's queue and saves the progress it made.
     fn written(&self, key: &P::Key, count: usize) {
-        let mut inbox = lock(&self.inbox);
+        let mut inbox = self.inbox.borrow_mut();
         let queue = inbox.queues.get_mut(key).expect("a batch comes from its key's queue");
         let written: Vec<(StreamId, u64)> = queue.drain(..count).map(|input| (input.stream, input.seq)).collect();
         if queue.is_empty() {
@@ -172,9 +173,9 @@ impl<P: Project> ProjectionHost<P> {
 }
 
 impl<P: Project> PolicyRun for ProjectionHost<P> {
-    fn run(&self, memory: &Arc<Memory>, waker: &Waker) -> Next {
-        let mut running = lock(&self.running);
-        let keys: Vec<P::Key> = lock(&self.inbox).queues.keys().cloned().collect();
+    fn run(&self, memory: &Rc<Memory>, waker: &Waker) -> Next {
+        let mut running = self.running.borrow_mut();
+        let keys: Vec<P::Key> = self.inbox.borrow_mut().queues.keys().cloned().collect();
         let mut next = Next::Idle;
         let retry = |at: Timestamp, next: &mut Next| {
             *next = match next {
@@ -192,7 +193,7 @@ impl<P: Project> PolicyRun for ProjectionHost<P> {
                         retry(at, &mut next);
                         break;
                     }
-                    let batch: Vec<ProjectionInput<P>> = match lock(&self.inbox).queues.get(&key) {
+                    let batch: Vec<ProjectionInput<P>> = match self.inbox.borrow_mut().queues.get(&key) {
                         Some(queue) => queue.iter().take(P::BATCH.max(1)).cloned().collect(),
                         None => Vec::new(),
                     };
@@ -241,13 +242,13 @@ impl<P: Project> PolicyRun for ProjectionHost<P> {
     }
 
     fn failures(&self) -> Vec<String> {
-        lock(&self.running).values().filter_map(|run| run.failure.clone()).collect()
+        self.running.borrow_mut().values().filter_map(|run| run.failure.clone()).collect()
     }
 }
 
 impl<P: Project> Consumer for ProjectionHost<P> {
-    fn push(&self, delivery: Arc<Delivery>) {
-        let mut inbox = lock(&self.inbox);
+    fn push(&self, delivery: Rc<Delivery>) {
+        let mut inbox = self.inbox.borrow_mut();
         let seen = inbox.seen.entry(delivery.stream.clone()).or_default();
         *seen = (*seen).max(delivery.seq);
         let Some((key, event)) = self.routes[&delivery.source](&delivery) else { return };
@@ -271,11 +272,11 @@ impl<P: Project> Consumer for ProjectionHost<P> {
         None
     }
 
-    fn history(&self) -> Vec<Arc<Delivery>> {
+    fn history(&self) -> Vec<Rc<Delivery>> {
         Vec::new()
     }
 
-    fn add_downstream(&self, _: Arc<dyn Consumer>) {}
+    fn add_downstream(&self, _: Rc<dyn Consumer>) {}
 }
 
 struct Routes<P: Keyed> {
@@ -318,16 +319,16 @@ impl Memory {
                 or_panic(store.reset_view(&name, P::VERSION), &name);
             }
         }
-        let host = Arc::new(ProjectionHost {
-            projection: Arc::new(projection),
+        let host = Rc::new(ProjectionHost {
+            projection: Rc::new(projection),
             routes: routes.routes,
-            inbox: Mutex::new(Inbox {
+            inbox: RefCell::new(Inbox {
                 queues: HashMap::new(),
                 outstanding: HashMap::new(),
                 seen: saved.clone(),
                 saved: saved.clone(),
             }),
-            running: Mutex::default(),
+            running: RefCell::default(),
             store: self.store.clone(),
         });
 
@@ -363,11 +364,10 @@ impl Memory {
     /// # Panics
     /// When `P` isn't hosted here.
     pub fn caught_up<P: Project>(&self, position: impl Into<Position>) -> Result<(), NotCaughtUp> {
-        let host =
-            self.hosts.get(&TypeId::of::<P>()).and_then(|host| (**host).downcast_ref::<Arc<ProjectionHost<P>>>());
+        let host = self.hosts.get(&TypeId::of::<P>()).and_then(|host| (**host).downcast_ref::<Rc<ProjectionHost<P>>>());
         let host = host.unwrap_or_else(|| panic!("{} isn't hosted here: add it with `Memory::projection`", P::NAME));
         let Position { stream, version } = position.into();
-        let applied = lock(&host.inbox).progress(&stream);
+        let applied = host.inbox.borrow_mut().progress(&stream);
         if applied >= version { Ok(()) } else { Err(NotCaughtUp { view: P::NAME, stream, wanted: version, applied }) }
     }
 }

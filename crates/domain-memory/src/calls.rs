@@ -1,35 +1,30 @@
 //! External system calls: answered by an adapter registered with `Memory::external`, or, when
 //! calls are stubbed, by whoever takes them with `Memory::next_call`, as a story does.
 
+use crate::Memory;
 use crate::views::AnyBox;
-use crate::{Memory, lock};
 use domain::host::{Adapter, Calls};
 use domain::{Answer, Answered, Call};
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-/// A boxed future that can cross threads where there are threads.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-#[cfg(target_arch = "wasm32")]
+/// A boxed future, polled on the memory's thread.
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type AnswerFn = Arc<dyn Fn(AnyBox) -> BoxFuture<AnyBox> + Send + Sync>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type AnswerFn = Arc<dyn Fn(AnyBox) -> BoxFuture<AnyBox>>;
+pub(crate) type AnswerFn = Rc<dyn Fn(AnyBox) -> BoxFuture<AnyBox>>;
 
 /// Each call's adapter, by the call's `TypeId`.
 pub(crate) struct Answers<'a>(pub &'a mut HashMap<TypeId, AnswerFn>);
 
 impl Calls for Answers<'_> {
-    fn answer<C: Call, I: Answer<C>>(&mut self, adapter: Arc<I>) {
-        let answer: AnswerFn = Arc::new(move |call: AnyBox| {
+    fn answer<C: Call, I: Answer<C>>(&mut self, adapter: Rc<I>) {
+        let answer: AnswerFn = Rc::new(move |call: AnyBox| {
             let call = *call.downcast::<C>().expect("a call matches its TypeId");
             let adapter = adapter.clone();
             Box::pin(async move { Box::new(adapter.answer(call).await) as AnyBox })
@@ -45,7 +40,7 @@ impl Memory {
     /// let bank = Memory::new().with::<Bank>().external(FraudCheck, VendorFraud::new(key));
     /// ```
     pub fn external<S: Adapter<I>, I>(mut self, _system: S, adapter: I) -> Self {
-        S::register(Arc::new(adapter), &mut Answers(&mut self.answers));
+        S::register(Rc::new(adapter), &mut Answers(&mut self.answers));
         self
     }
 
@@ -58,12 +53,12 @@ impl Memory {
 
     /// The oldest call waiting for an answer, if calls are stubbed.
     pub fn next_call(&self) -> Option<StubbedCall> {
-        lock(&self.stubbed).pop_front()
+        self.stubbed.borrow_mut().pop_front()
     }
 
     /// Every call waiting for an answer, described.
     pub fn waiting_calls(&self) -> Vec<String> {
-        lock(&self.stubbed).iter().map(|call| call.to_string()).collect()
+        self.stubbed.borrow_mut().iter().map(|call| call.to_string()).collect()
     }
 
     /// Starts `call`: through its adapter, held for an answer, or failed when neither applies.
@@ -76,9 +71,9 @@ impl Memory {
             let failed: Answered<C> = Err(domain::CallError::Failed(reason));
             return Box::pin(std::future::ready(Box::new(failed) as AnyBox));
         }
-        let slot = Arc::new(Mutex::new(Slot { answer: None, waker: None }));
+        let slot = Rc::new(RefCell::new(Slot { answer: None, waker: None }));
         let describe = format!("{}.{} {call:?}", C::SYSTEM, C::NAME);
-        lock(&self.stubbed).push_back(StubbedCall { describe, call: Box::new(call), slot: slot.clone() });
+        self.stubbed.borrow_mut().push_back(StubbedCall { describe, call: Box::new(call), slot: slot.clone() });
         Box::pin(Waiting { slot })
     }
 }
@@ -87,7 +82,7 @@ impl Memory {
 pub struct StubbedCall {
     describe: String,
     call: AnyBox,
-    slot: Arc<Mutex<Slot>>,
+    slot: Rc<RefCell<Slot>>,
 }
 
 impl StubbedCall {
@@ -103,7 +98,7 @@ impl StubbedCall {
     pub fn answer<C: Call>(self, answer: Answered<C>) {
         assert!(self.args::<C>().is_some(), "{self} isn't a {}.{}", C::SYSTEM, C::NAME);
         let waker = {
-            let mut slot = lock(&self.slot);
+            let mut slot = self.slot.borrow_mut();
             slot.answer = Some(Box::new(answer));
             slot.waker.take()
         };
@@ -129,14 +124,14 @@ struct Slot {
 }
 
 struct Waiting {
-    slot: Arc<Mutex<Slot>>,
+    slot: Rc<RefCell<Slot>>,
 }
 
 impl Future for Waiting {
     type Output = AnyBox;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<AnyBox> {
-        let mut slot = lock(&self.slot);
+        let mut slot = self.slot.borrow_mut();
         match slot.answer.take() {
             Some(answer) => Poll::Ready(answer),
             None => {

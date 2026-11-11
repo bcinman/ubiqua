@@ -2,6 +2,7 @@
 
 use crate::pending::Pending;
 use crate::{Api, Backend, Client};
+use domain::MaybeSend;
 use domain::telemetry::{AggregateTrace, Catalog, Since, Status, Trace, ViewKey};
 use domain_memory::{Telemetry, TraceFeed};
 
@@ -34,13 +35,15 @@ impl ClientTelemetry {
     /// The aggregate instance recording `stream`, such as `Account/sam-main`, at version `at`, or now.
     pub fn aggregate(&self, stream: &str, at: Option<u64>) -> Pending<Result<Option<AggregateTrace>, String>> {
         let op = domain::wire::Op::Aggregate { stream: stream.into(), at };
-        self.read(|telemetry| telemetry.aggregate(stream, at), op)
+        let stream = stream.to_string();
+        self.read(move |telemetry| telemetry.aggregate(&stream, at), op)
     }
 
     /// Every key of the view named `view` that has a state.
     pub fn view(&self, view: &str) -> Pending<Result<Vec<ViewKey>, String>> {
         let op = domain::wire::Op::ViewKeys { view: view.into() };
-        self.read(|telemetry| telemetry.view(view).ok_or_else(|| format!("no view {view} is hosted here")), op)
+        let view = view.to_string();
+        self.read(move |telemetry| telemetry.view(&view).ok_or_else(|| format!("no view {view} is hosted here")), op)
     }
 
     /// What happened since `since`, then [`Trace::CaughtUp`], then what happens, until dropped.
@@ -48,11 +51,19 @@ impl ClientTelemetry {
     /// sends `CaughtUp` again. It ends with [`Trace::Failed`] when it can't go on.
     pub fn trace(&self, since: Since) -> TraceFeed {
         match &self.backend {
-            Backend::Local(runtime) => runtime.telemetry().trace(since).unwrap_or_else(|reason| {
+            Backend::Local(runtime) => {
+                // Filled from the runtime's thread.
                 let (publisher, feed) = domain_memory::channel(());
-                publisher.push(Trace::Failed(reason));
+                runtime.exec(
+                    move |memory| {
+                        if let Err(reason) = memory.telemetry().trace_to(since, &publisher) {
+                            publisher.push(Trace::Failed(reason));
+                        }
+                    },
+                    |_| {},
+                );
                 feed
-            }),
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => remote.trace(since),
         }
@@ -61,11 +72,18 @@ impl ClientTelemetry {
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn read<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
-        local: impl FnOnce(Telemetry<'_>) -> Result<T, String>,
+        local: impl FnOnce(Telemetry<'_>) -> Result<T, String> + MaybeSend + 'static,
         op: domain::wire::Op,
     ) -> Pending<Result<T, String>> {
         match &self.backend {
-            Backend::Local(runtime) => Pending::ready(local(runtime.telemetry())),
+            Backend::Local(runtime) => {
+                let (pending, resolver) = crate::pending::pending();
+                runtime.exec(
+                    move |memory| local(memory.telemetry()),
+                    move |read| resolver.resolve(read.unwrap_or_else(|reason| Err(format!("the read {reason}")))),
+                );
+                pending
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => remote.telemetry(op),
         }

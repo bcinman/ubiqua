@@ -2,7 +2,7 @@
 //! in the store when there is one, so they fire after a restart too.
 
 use crate::store::ScheduleRow;
-use crate::{AggregateOf, Memory, decode_json, json, lock};
+use crate::{AggregateOf, Memory, decode_json, json};
 use domain::{
     Aggregate, AggregateId, Command, CommandId, Evolve, Handles, NeverRejects, SendError, StreamId, Timestamp,
 };
@@ -108,10 +108,10 @@ impl Memory {
         };
         {
             // A fired schedule left a receipt, so `ran` caught it above.
-            let mut schedules = lock(&self.schedules);
+            let mut schedules = self.schedules.borrow_mut();
             let key = (row.stream.clone(), row.command_id.clone());
             self.save_schedule(&row).map_err(ScheduleError::Unavailable)?;
-            lock(&self.stuck).remove(&key);
+            self.stuck.borrow_mut().remove(&key);
             schedules.insert(key, row);
         }
         self.wake();
@@ -128,7 +128,7 @@ impl Memory {
         let command_id = command_id.into();
         let stream = StreamId::of::<AggregateOf<I>>(id);
         let key = (stream.to_string(), command_id.to_string());
-        let mut schedules = lock(&self.schedules);
+        let mut schedules = self.schedules.borrow_mut();
         let Some(row) = schedules.get(&key) else {
             drop(schedules);
             let ran = self.ran(id, &stream, &command_id).map_err(UnscheduleError::Unavailable)?;
@@ -150,8 +150,9 @@ impl Memory {
     pub(crate) fn fire_due(&self) {
         let now = self.now();
         let mut due: Vec<ScheduleRow> = {
-            let stuck = lock(&self.stuck);
-            lock(&self.schedules)
+            let stuck = self.stuck.borrow_mut();
+            self.schedules
+                .borrow_mut()
                 .values()
                 .filter(|row| row.state == PENDING && row.at <= now.as_millis())
                 .filter(|row| !stuck.contains(&(row.stream.clone(), row.command_id.clone())))
@@ -162,33 +163,34 @@ impl Memory {
         for row in due {
             let key = (row.stream.clone(), row.command_id.clone());
             // Cancelled since it was picked: keep it that way.
-            if lock(&self.schedules).get(&key).is_none_or(|current| current.state != PENDING) {
+            if self.schedules.borrow_mut().get(&key).is_none_or(|current| current.state != PENDING) {
                 continue;
             }
-            let fire = lock(&self.firers).get(&row.command).copied();
+            let fire = self.firers.borrow_mut().get(&row.command).copied();
             let Some(fire) = fire else {
                 // Its aggregate isn't hosted here; it fires once a model with it is.
-                lock(&self.stuck).insert(key);
+                self.stuck.borrow_mut().insert(key);
                 continue;
             };
             let next = match fire(self, &row) {
                 Ok(()) => ScheduleRow { state: FIRED.into(), ..row },
                 Err(Unfired::Retry) => ScheduleRow { at: now.after(RETRY).as_millis(), ..row },
                 Err(Unfired::Undecodable) => {
-                    lock(&self.stuck).insert(key);
+                    self.stuck.borrow_mut().insert(key);
                     continue;
                 }
             };
             if self.save_schedule(&next).is_ok() {
-                lock(&self.schedules).insert(key, next);
+                self.schedules.borrow_mut().insert(key, next);
             }
         }
     }
 
     /// When the next pending command is due.
     pub(crate) fn next_schedule(&self) -> Option<Timestamp> {
-        let stuck = lock(&self.stuck);
-        lock(&self.schedules)
+        let stuck = self.stuck.borrow_mut();
+        self.schedules
+            .borrow_mut()
             .values()
             .filter(|row| row.state == PENDING && !stuck.contains(&(row.stream.clone(), row.command_id.clone())))
             .map(|row| Timestamp::from_millis(row.at))
@@ -200,7 +202,7 @@ impl Memory {
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
-        lock(&self.firers).entry(command_key::<C>()).or_insert(fire::<C>);
+        self.firers.borrow_mut().entry(command_key::<C>()).or_insert(fire::<C>);
     }
 
     fn save_schedule(&self, row: &ScheduleRow) -> Result<(), String> {
@@ -217,7 +219,7 @@ impl Memory {
         AggregateOf<I>: Evolve,
     {
         let instance = self.instance(id);
-        let mut instance = lock(&instance);
+        let mut instance = instance.borrow_mut();
         self.load(id, &mut instance)?;
         if instance.receipts.contains_key(command_id) {
             return Ok(true);

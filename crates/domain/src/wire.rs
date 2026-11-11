@@ -26,7 +26,6 @@ use crate::telemetry::{Since, Trace};
 use crate::{Command, CommandId, Cursor, Entry, Receipt, Snapshot, StreamId, Timestamp, View};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 /// A client's message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -184,7 +183,7 @@ pub fn encode_entry<V: View>(entry: &Entry<V>) -> Result<WireEntry, String> {
     Ok(WireEntry {
         cursor: entry.cursor.seq(),
         event: serde_json::to_value(&entry.event).map_err(|e| e.to_string())?,
-        state: serde_json::to_value(&*entry.state).map_err(|e| e.to_string())?,
+        state: serde_json::to_value(&entry.state).map_err(|e| e.to_string())?,
         stream: entry.stream.to_string(),
         seq: entry.seq,
         at: entry.at.as_millis(),
@@ -195,7 +194,7 @@ pub fn decode_entry<V: View>(entry: WireEntry) -> Result<Entry<V>, String> {
     Ok(Entry {
         cursor: Cursor::new(entry.cursor),
         event: serde_json::from_value(entry.event).map_err(|e| e.to_string())?,
-        state: Arc::new(serde_json::from_value(entry.state).map_err(|e| e.to_string())?),
+        state: serde_json::from_value(entry.state).map_err(|e| e.to_string())?,
         stream: StreamId::from(entry.stream),
         seq: entry.seq,
         at: Timestamp::from_millis(entry.at),

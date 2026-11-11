@@ -1,7 +1,7 @@
 use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Saga};
 use domain_memory::{Memory, Run, SagaCx, SagaStatus, SignalError};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::rc::Rc;
 
 // A log records notes. `Refuse` is always rejected.
 
@@ -88,8 +88,8 @@ fn notes(memory: &Memory, id: &str) -> Vec<String> {
     memory.events(&l(id)).into_iter().map(|e| e.event).map(|LogEvent::Noted(Noted(n))| n).collect()
 }
 
-fn hosted() -> Arc<Memory> {
-    Arc::new(Memory::new().with::<Logging>().saga::<Steps>().saga::<Twice>())
+fn hosted() -> Rc<Memory> {
+    Rc::new(Memory::new().with::<Logging>().saga::<Steps>().saga::<Twice>())
 }
 
 #[test]

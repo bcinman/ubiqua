@@ -1,7 +1,7 @@
 use domain::{
     Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Frame, KeyOf, Model, Origin, Timestamp, View, ViewCx,
 };
-use domain_memory::Memory;
+use domain_memory::{Memory, Runtime};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -153,7 +153,7 @@ fn credit(amount: u64) -> Credit {
 }
 
 fn totals(entries: &[domain::Entry<Totals>]) -> Vec<(u64, u64)> {
-    entries.iter().map(|e| (e.cursor.seq(), *e.state)).collect()
+    entries.iter().map(|e| (e.cursor.seq(), e.state)).collect()
 }
 
 /// A clock that ticks once per reading, so every commit has its own time.
@@ -280,40 +280,44 @@ fn a_view_added_later_receives_the_history_in_the_order_it_was_recorded() {
 
 #[test]
 fn views_apply_each_source_in_order_under_concurrent_commands() {
-    let memory = Arc::new(Memory::new().with::<Bank>());
+    let runtime = Runtime::spawn(|| Memory::new().with::<Bank>());
     let threads: Vec<_> = (0..8)
         .map(|t| {
-            let memory = memory.clone();
+            let runtime = runtime.clone();
             std::thread::spawn(move || {
                 for _ in 0..100 {
-                    memory.send(&w(&format!("w{}", t % 4)), credit(1)).unwrap();
+                    runtime.call(move |m| m.send(&w(&format!("w{}", t % 4)), credit(1)).map(drop)).unwrap().unwrap();
                 }
             })
         })
         .collect();
     threads.into_iter().for_each(|t| t.join().unwrap());
 
-    for wallet in 0..4 {
-        let entries = memory.view::<Totals>().list(&w(&format!("w{wallet}")), Cursor::START, usize::MAX);
-        let expected: Vec<(u64, u64)> = (1..=200).map(|n| (n, n)).collect();
-        assert_eq!(totals(&entries), expected, "w{wallet}");
-    }
-    assert_eq!(memory.view::<PerOwner>().get(&OwnerId::new("sam")).unwrap().credited, 800);
+    runtime
+        .call(|memory| {
+            for wallet in 0..4 {
+                let entries = memory.view::<Totals>().list(&w(&format!("w{wallet}")), Cursor::START, usize::MAX);
+                let expected: Vec<(u64, u64)> = (1..=200).map(|n| (n, n)).collect();
+                assert_eq!(totals(&entries), expected, "w{wallet}");
+            }
+            assert_eq!(memory.view::<PerOwner>().get(&OwnerId::new("sam")).unwrap().credited, 800);
+        })
+        .unwrap();
 }
 
 #[test]
 fn a_waiting_reader_wakes_when_an_entry_arrives() {
-    let memory = Arc::new(Memory::new().with::<Bank>());
-    let mut feed = memory.view::<Totals>().events(&w("a"), Cursor::START);
+    let runtime = Runtime::spawn(|| Memory::new().with::<Bank>());
+    let mut feed = runtime.call(|m| m.view::<Totals>().events(&w("a"), Cursor::START)).unwrap();
     assert!(block_on(feed.recv()).is_caught_up());
 
-    let writer = memory.clone();
+    let writer = runtime.clone();
     let thread = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(20));
-        writer.send(&w("a"), credit(3)).unwrap();
+        writer.call(|m| m.send(&w("a"), credit(3)).map(drop)).unwrap().unwrap();
     });
     let frame = block_on(feed.recv());
-    assert_eq!(*frame.entry().unwrap().state, 3);
+    assert_eq!(frame.entry().unwrap().state, 3);
     thread.join().unwrap();
 }
 

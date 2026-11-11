@@ -2,13 +2,13 @@
 //! Values arrive as JSON text, so a store needs none of the model's types. `domain-sqlite`
 //! implements it.
 
-use domain::{MaybeSend, MaybeSync};
 use std::fmt;
 
 /// Durable storage for a `Memory`. Each method succeeds or fails as a whole. Between
 /// [`begin_batch`](Self::begin_batch) and [`commit_batch`](Self::commit_batch), what they write
-/// reaches the disk together; otherwise each method is its own transaction.
-pub trait Store: MaybeSend + MaybeSync {
+/// reaches the disk together; otherwise each method is its own transaction. Only the memory's
+/// thread uses it, so it needn't be `Send` or `Sync`: open it where the memory is built.
+pub trait Store {
     /// Starts a batch, which a [`Runtime`](crate::Runtime) does around the commands it has queued.
     /// The default doesn't batch.
     fn begin_batch(&self) -> Result<(), StoreError> {

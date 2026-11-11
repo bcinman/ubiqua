@@ -9,7 +9,6 @@ use domain_memory::{Memory, Runtime, TraceFeed};
 use domain_server::Server;
 use domain_sqlite::Sqlite;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -133,20 +132,22 @@ fn a_replay_shows_the_same_events_and_view_changes_as_the_live_trace_did() {
 
 #[test]
 fn a_trace_started_while_commands_commit_shows_each_event_once() {
-    let bank = Arc::new(Memory::with_clock(ticking()).with::<Bank>());
-    bank.send(&sam(), OpenAccount { owner: "sam".into() }).unwrap();
+    let bank = Runtime::spawn(|| Memory::with_clock(ticking()).with::<Bank>());
+    bank.call(|m| m.send(&sam(), OpenAccount { owner: "sam".into() }).map(drop)).unwrap().unwrap();
     const DEPOSITS: u64 = 300;
     let sending = {
         let bank = bank.clone();
         std::thread::spawn(move || {
             for _ in 0..DEPOSITS {
-                bank.send(&sam(), DepositMoney { amount: 1 }).unwrap();
+                bank.call(|m| m.send(&sam(), DepositMoney { amount: 1 }).map(drop)).unwrap().unwrap();
             }
         })
     };
     std::thread::sleep(Duration::from_millis(2));
-    let trace = bank.telemetry().trace(Since::Start).unwrap();
+    let trace = bank.call(|m| m.telemetry().trace(Since::Start)).unwrap().unwrap();
     sending.join().unwrap();
+    // The runtime's thread has handed out every trace once this job runs.
+    bank.call(|_| ()).unwrap();
 
     let traces = trace.drain();
     let seqs: Vec<u64> = traces
@@ -226,7 +227,7 @@ fn a_replay_reads_what_an_earlier_run_kept_on_disk() {
 
 #[test]
 fn a_server_serves_telemetry_only_to_whom_it_allows_and_a_trace_carries_on_after_a_reconnect() {
-    let bank = Runtime::spawn(Memory::with_clock(ticking()).with::<Bank>());
+    let bank = Runtime::spawn(|| Memory::with_clock(ticking()).with::<Bank>());
     let serve = |addr: &str| {
         Server::<BankApi>::new(bank.clone())
             .sessions(|token| ["sam", "ops"].contains(&token).then(|| User(token.into())))

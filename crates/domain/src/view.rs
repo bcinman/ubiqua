@@ -1,21 +1,20 @@
 //! Views: read models folded from events, and the read protocol hosts serve them with.
 
-use crate::{Command, Events, Evolve, MaybeSend, MaybeSync, ReadCx, Receipt, Rejections, StreamId, Timestamp};
+use crate::{Command, Events, Evolve, MaybeSend, ReadCx, Receipt, Rejections, StreamId, Timestamp};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::any::Any;
 use std::fmt::{self, Debug, Display};
 use std::hash::Hash;
-use std::sync::Arc;
 
 /// Something a view can read: an aggregate, or another view. The derives implement it.
-pub trait Source: Sized + MaybeSend + MaybeSync + 'static {
+pub trait Source: Sized + 'static {
     /// The instance that recorded an event: an aggregate's id, or a view's key.
-    type SourceId: Clone + Eq + Hash + Debug + MaybeSend + MaybeSync + 'static;
+    type SourceId: Clone + Eq + Hash + Debug + 'static;
     /// The events it records: an aggregate's events, or the events a view emits.
     type SourceEvent: Events;
     /// What arrives with each event: `()` from an aggregate, the key's state after it from a view.
-    type SourceState: Clone + Debug + MaybeSend + MaybeSync + 'static;
+    type SourceState: Clone + Debug + 'static;
 
     /// Hosts the source itself, so a view's sources are hosted before it.
     #[doc(hidden)]
@@ -35,9 +34,9 @@ pub struct Origin<'a, S: Source> {
 }
 
 /// What a view or projection is partitioned by, and the events it reads. The derives implement it.
-pub trait Keyed: Sized + MaybeSend + MaybeSync + 'static {
+pub trait Keyed: Sized + 'static {
     /// What one instance is about, such as one account. Events for one key are handled in order.
-    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
+    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + 'static;
     /// The events it reads, as an enum. The derive generates it.
     type Input: Events;
 }
@@ -50,7 +49,7 @@ pub trait View: Keyed {
     /// events, along with every view that reads it. `#[view(version = 1)]` sets it.
     const VERSION: u64 = 0;
     /// `Default` is the state before the key's first event.
-    type State: Clone + Debug + Default + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
+    type State: Clone + Debug + Default + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static;
     /// The events the view emits. Without `events(..)`, every input it applies.
     type Event: Events;
     /// Why a read may be refused: `#[view(rejects(..))]`. Empty unless the view guards its keys.
@@ -233,7 +232,7 @@ impl Cursor {
 pub struct Entry<V: View> {
     pub cursor: Cursor,
     pub event: V::Event,
-    pub state: Arc<V::State>,
+    pub state: V::State,
     /// The source event that caused it.
     pub stream: StreamId,
     pub seq: u64,

@@ -10,19 +10,20 @@ use crate::calls::BoxFuture;
 use crate::policies::{Next, PolicyRun};
 use crate::schedules::{PENDING, Unfired, command_key};
 use crate::store::{KeyRow, ScheduleRow, StoreError, ViewRows};
-use crate::{AggregateOf, Memory, decode_json, json, lock, reason};
+use crate::{AggregateOf, Memory, decode_json, json, reason};
 use domain::host::CurrentActor;
 use domain::{Command, Handles, MaybeSend, MaybeSync, NeverRejects, Saga, SendError, StreamId, Timestamp};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
+use std::rc::{Rc, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -40,7 +41,7 @@ use std::time::Duration;
 /// ```
 pub trait Run: Saga {
     /// Carries out one run. `Err` refuses it: the compensations of the steps that succeeded run.
-    fn run(self, cx: &SagaCx<Self>) -> impl Future<Output = Result<(), Self::Rejection>> + MaybeSend;
+    fn run(self, cx: &SagaCx<Self>) -> impl Future<Output = Result<(), Self::Rejection>>;
 }
 
 /// Where a run stands. `R` is the saga's rejection.
@@ -138,11 +139,11 @@ pub struct SagaCx<S: Saga> {
     memory: Weak<Memory>,
     key: S::Key,
     key_json: String,
-    cell: Arc<Mutex<RunCell>>,
+    cell: Rc<RefCell<RunCell>>,
 }
 
 impl<S: Saga> SagaCx<S> {
-    fn memory(&self) -> Arc<Memory> {
+    fn memory(&self) -> Rc<Memory> {
         self.memory.upgrade().expect("a saga runs while its memory is alive")
     }
 
@@ -177,7 +178,7 @@ impl<S: Saga> SagaCx<S> {
     }
 
     fn suspend<T>(&self, suspend: Suspend) -> Option<T> {
-        lock(&self.cell).suspend.get_or_insert(suspend);
+        self.cell.borrow_mut().suspend.get_or_insert(suspend);
         None
     }
 
@@ -189,7 +190,7 @@ impl<S: Saga> SagaCx<S> {
     {
         let Step { name, id, command, actor, compensation, .. } = step;
         {
-            let mut cell = lock(&self.cell);
+            let mut cell = self.cell.borrow_mut();
             if cell.suspend.is_some() {
                 return None;
             }
@@ -223,7 +224,7 @@ impl<S: Saga> SagaCx<S> {
             Err(e) => return self.suspend(Suspend::Die(format!("step {name}'s result doesn't encode: {e}"))),
         };
         let compensation = if outcome.is_ok() { compensation } else { None };
-        let mut cell = lock(&self.cell);
+        let mut cell = self.cell.borrow_mut();
         cell.record.steps.insert(name.clone(), StepRow { result, compensation });
         cell.record.order.push(name);
         if let Err(e) = memory.save_run(S::NAME, &self.key_json, &cell.record) {
@@ -315,7 +316,7 @@ impl<S: Saga, T: DeserializeOwned> Future for Signal<'_, S, T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<T> {
-        let mut cell = lock(&self.cx.cell);
+        let mut cell = self.cx.cell.borrow_mut();
         let Some(value) = cell.record.signals.get(&self.name).cloned() else { return Poll::Pending };
         match serde_json::from_value(value) {
             Ok(value) => Poll::Ready(value),
@@ -332,13 +333,13 @@ impl<S: Saga, T: DeserializeOwned> Future for Signal<'_, S, T> {
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub(crate) struct SagaHost<S: Run> {
-    runs: Mutex<HashMap<String, Arc<Mutex<RunHost<S>>>>>,
+    runs: RefCell<HashMap<String, Rc<RefCell<RunHost<S>>>>>,
 }
 
 struct RunHost<S: Run> {
     key: S::Key,
     key_json: String,
-    cell: Arc<Mutex<RunCell>>,
+    cell: Rc<RefCell<RunCell>>,
     future: Option<BoxFuture<Result<(), S::Rejection>>>,
     attempts: u32,
     retry_at: Option<Timestamp>,
@@ -347,13 +348,13 @@ struct RunHost<S: Run> {
 
 impl<S: Run> RunHost<S> {
     fn status(&self) -> Stored {
-        lock(&self.cell).record.status.clone()
+        self.cell.borrow_mut().record.status.clone()
     }
 
     /// Sets the status and keeps it. If the store fails, a restart takes the run up again, which
     /// is safe.
     fn finish(&mut self, memory: &Memory, status: Stored) -> Next {
-        let mut cell = lock(&self.cell);
+        let mut cell = self.cell.borrow_mut();
         cell.record.status = status;
         let _ = memory.save_run(S::NAME, &self.key_json, &cell.record);
         self.retry_at = None;
@@ -377,7 +378,7 @@ impl<S: Run> RunHost<S> {
         Next::RetryAt(at)
     }
 
-    fn advance(&mut self, memory: &Arc<Memory>, waker: &Waker) -> Next {
+    fn advance(&mut self, memory: &Rc<Memory>, waker: &Waker) -> Next {
         if let Some(at) = self.retry_at
             && memory.now() < at
         {
@@ -390,10 +391,10 @@ impl<S: Run> RunHost<S> {
         }
     }
 
-    fn step(&mut self, memory: &Arc<Memory>, waker: &Waker) -> Next {
+    fn step(&mut self, memory: &Rc<Memory>, waker: &Waker) -> Next {
         if self.future.is_none() {
             let input = {
-                let mut cell = lock(&self.cell);
+                let mut cell = self.cell.borrow_mut();
                 cell.used.clear();
                 cell.suspend = None;
                 cell.record.input.clone()
@@ -403,7 +404,7 @@ impl<S: Run> RunHost<S> {
                 Err(e) => return self.die(memory, format!("its input doesn't decode: {e}")),
             };
             let cx = SagaCx::<S> {
-                memory: Arc::downgrade(memory),
+                memory: Rc::downgrade(memory),
                 key: self.key.clone(),
                 key_json: self.key_json.clone(),
                 cell: self.cell.clone(),
@@ -416,7 +417,7 @@ impl<S: Run> RunHost<S> {
         }));
         match polled {
             Err(panic) => self.die(memory, reason(&*panic)),
-            Ok(Poll::Pending) => match { lock(&self.cell).suspend.take() } {
+            Ok(Poll::Pending) => match { self.cell.borrow_mut().suspend.take() } {
                 None => Next::Waiting,
                 Some(Suspend::Die(why)) => self.die(memory, why),
                 Some(Suspend::Retry(why)) => self.retry(memory, why),
@@ -442,7 +443,7 @@ impl<S: Run> RunHost<S> {
     /// Sends each compensation not sent yet, last step first, then records the refusal.
     fn compensate(&mut self, memory: &Memory, rejection: Value) -> Next {
         let pending: Vec<Compensation> = {
-            let cell = lock(&self.cell);
+            let cell = self.cell.borrow_mut();
             let record = &cell.record;
             record
                 .order
@@ -453,7 +454,7 @@ impl<S: Run> RunHost<S> {
                 .collect()
         };
         for compensation in pending {
-            let fire = lock(&memory.firers).get(&compensation.command).copied();
+            let fire = memory.firers.borrow_mut().get(&compensation.command).copied();
             let Some(fire) = fire else {
                 return self.die(memory, format!("no {} is hosted to compensate with", compensation.command));
             };
@@ -468,7 +469,7 @@ impl<S: Run> RunHost<S> {
             };
             match fire(memory, &row) {
                 Ok(()) => {
-                    let mut cell = lock(&self.cell);
+                    let mut cell = self.cell.borrow_mut();
                     cell.record.compensated.insert(compensation.name);
                     let _ = memory.save_run(S::NAME, &self.key_json, &cell.record);
                 }
@@ -484,12 +485,12 @@ impl<S: Run> RunHost<S> {
 }
 
 impl<S: Run> PolicyRun for SagaHost<S> {
-    fn run(&self, memory: &Arc<Memory>, waker: &Waker) -> Next {
+    fn run(&self, memory: &Rc<Memory>, waker: &Waker) -> Next {
         // Each run on its own lock, so a step may start or signal another run.
-        let runs: Vec<_> = lock(&self.runs).values().cloned().collect();
+        let runs: Vec<_> = self.runs.borrow_mut().values().cloned().collect();
         let mut next = Next::Idle;
         for run in runs {
-            next = match (lock(&run).advance(memory, waker), next) {
+            next = match (run.borrow_mut().advance(memory, waker), next) {
                 (Next::RetryAt(at), Next::RetryAt(earlier)) => Next::RetryAt(at.min(earlier)),
                 (Next::RetryAt(at), _) | (_, Next::RetryAt(at)) => Next::RetryAt(at),
                 (Next::Waiting, _) | (_, Next::Waiting) => Next::Waiting,
@@ -500,8 +501,8 @@ impl<S: Run> PolicyRun for SagaHost<S> {
     }
 
     fn failures(&self) -> Vec<String> {
-        let runs: Vec<_> = lock(&self.runs).values().cloned().collect();
-        runs.iter().filter_map(|run| lock(run).failure.clone()).collect()
+        let runs: Vec<_> = self.runs.borrow_mut().values().cloned().collect();
+        runs.iter().filter_map(|run| run.borrow().failure.clone()).collect()
     }
 }
 
@@ -519,10 +520,10 @@ impl Memory {
             for KeyRow { key: key_json, state } in rows.keys {
                 let key: S::Key = decode_json(&key_json).unwrap_or_else(|e| panic!("a stored run of {name}: {e}"));
                 let record: Record = decode_json(&state).unwrap_or_else(|e| panic!("a stored run of {name}: {e}"));
-                runs.insert(key_json.clone(), Arc::new(Mutex::new(RunHost::<S>::new(key, key_json, record))));
+                runs.insert(key_json.clone(), Rc::new(RefCell::new(RunHost::<S>::new(key, key_json, record))));
             }
         }
-        let host = Arc::new(SagaHost::<S> { runs: Mutex::new(runs) });
+        let host = Rc::new(SagaHost::<S> { runs: RefCell::new(runs) });
         let hosted = self.hosts.insert(TypeId::of::<S>(), Box::new(host.clone()));
         assert!(
             hosted.is_none(),
@@ -543,7 +544,7 @@ impl Memory {
     pub fn start_saga<S: Run>(&self, key: &S::Key, input: S) -> Result<(), StoreError> {
         let host = self.saga_host::<S>();
         let key_json = json(key).unwrap_or_else(|e| panic!("{e}"));
-        let mut runs = lock(&host.runs);
+        let mut runs = host.runs.borrow_mut();
         if runs.contains_key(&key_json) {
             return Ok(());
         }
@@ -556,7 +557,7 @@ impl Memory {
             compensated: BTreeSet::new(),
         };
         self.save_run(S::NAME, &key_json, &record).map_err(StoreError)?;
-        runs.insert(key_json.clone(), Arc::new(Mutex::new(RunHost::new(key.clone(), key_json, record))));
+        runs.insert(key_json.clone(), Rc::new(RefCell::new(RunHost::new(key.clone(), key_json, record))));
         drop(runs);
         self.wake();
         Ok(())
@@ -568,10 +569,10 @@ impl Memory {
     /// When `S` isn't hosted here.
     pub fn saga_status<S: Run>(&self, key: &S::Key) -> SagaStatus<S::Rejection> {
         let host = self.saga_host::<S>();
-        let Some(run) = json(key).ok().and_then(|key| lock(&host.runs).get(&key).cloned()) else {
+        let Some(run) = json(key).ok().and_then(|key| host.runs.borrow_mut().get(&key).cloned()) else {
             return SagaStatus::NotStarted;
         };
-        let status = lock(&run).status();
+        let status = run.borrow_mut().status();
         match status {
             Stored::Running | Stored::Compensating(_) => SagaStatus::Running,
             Stored::Completed => SagaStatus::Completed,
@@ -591,11 +592,11 @@ impl Memory {
     pub fn signal<S: Run>(&self, key: &S::Key, name: &str, value: impl Serialize) -> Result<(), SignalError> {
         let host = self.saga_host::<S>();
         let key_json = json(key).unwrap_or_else(|e| panic!("{e}"));
-        let Some(run) = lock(&host.runs).get(&key_json).cloned() else { return Err(SignalError::NotStarted) };
+        let Some(run) = host.runs.borrow_mut().get(&key_json).cloned() else { return Err(SignalError::NotStarted) };
         let value = serde_json::to_value(value).unwrap_or_else(|e| panic!("signal {name} doesn't encode: {e}"));
         {
-            let run = lock(&run);
-            let mut cell = lock(&run.cell);
+            let run = run.borrow_mut();
+            let mut cell = run.cell.borrow_mut();
             if cell.record.signals.contains_key(name) {
                 return Ok(());
             }
@@ -609,8 +610,8 @@ impl Memory {
         Ok(())
     }
 
-    fn saga_host<S: Run>(&self) -> &Arc<SagaHost<S>> {
-        let host = self.hosts.get(&TypeId::of::<S>()).and_then(|host| (**host).downcast_ref::<Arc<SagaHost<S>>>());
+    fn saga_host<S: Run>(&self) -> &Rc<SagaHost<S>> {
+        let host = self.hosts.get(&TypeId::of::<S>()).and_then(|host| (**host).downcast_ref::<Rc<SagaHost<S>>>());
         host.unwrap_or_else(|| panic!("{} isn't hosted here: add it with `Memory::saga`", S::NAME))
     }
 
@@ -628,7 +629,7 @@ impl Memory {
 
 impl<S: Run> RunHost<S> {
     fn new(key: S::Key, key_json: String, record: Record) -> Self {
-        let cell = Arc::new(Mutex::new(RunCell { record, used: HashSet::new(), suspend: None }));
+        let cell = Rc::new(RefCell::new(RunCell { record, used: HashSet::new(), suspend: None }));
         Self { key, key_json, cell, future: None, attempts: 0, retry_at: None, failure: None }
     }
 }

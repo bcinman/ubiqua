@@ -20,7 +20,8 @@ fn main() {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["serve", addr, ref db @ ..] => {
             // Demo only: the token is the user's name. Check a real session here.
-            let server = Server::<BankApi>::new(Runtime::spawn(bank(db.first().copied())))
+            let db = db.first().map(|path| path.to_string());
+            let server = Server::<BankApi>::new(Runtime::spawn(move || bank(db.as_deref())))
                 .sessions(|token| Some(User(token.to_string())))
                 .listen(addr)
                 .expect("listen");
@@ -37,7 +38,8 @@ fn main() {
         }
         [] | [_] => {
             // The model runs on its own thread; the app talks to it through a client.
-            let client = Client::<BankApi>::in_process(Runtime::spawn(bank(args.first().map(String::as_str))));
+            let db = args.first().cloned();
+            let client = Client::<BankApi>::in_process(Runtime::spawn(move || bank(db.as_deref())));
             app(&client.acting_as(User("sam".into())), "sam");
         }
         _ => eprintln!("usage: bank [bank.db] | bank serve ADDR [bank.db] | bank join URL NAME"),

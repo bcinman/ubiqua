@@ -29,7 +29,7 @@ use domain::{
     AggregateId, Api, Apply, Command, CommandId, Cursor, Entry, Frame, Handles, MaybeSend, MaybeSync, NotCaughtUp,
     Position, ReadCx, Reads, Receipt, SendError, Snapshot, Validate, View,
 };
-use domain_memory::{Memory, Publisher, Runtime, ViewReader, Watch};
+use domain_memory::{Memory, Publisher, Runtime, Watch};
 use live::Shared;
 use pending::{lock, pending};
 use predict::{Overlay, Predictor};
@@ -95,9 +95,8 @@ pub enum Connection {
 }
 
 impl<A: Api> Client<A> {
-    /// Talks to the model `runtime` runs in this process. With [`Runtime::spawn`], commands run
-    /// on its thread, so the UI thread never waits on one; with [`Runtime::inline`], on the
-    /// caller's.
+    /// Talks to the model `runtime` runs in this process. Commands and reads run on its thread,
+    /// so the UI thread never waits on one.
     pub fn in_process(runtime: Runtime) -> Self {
         Self { backend: Backend::Local(runtime), actor: None, predictor: Arc::default(), _api: PhantomData }
     }
@@ -209,11 +208,11 @@ impl<A: Api> Client<A> {
         A: Reads<V>,
     {
         let inner = match &self.backend {
-            Backend::Local(runtime) => ViewInner::Local { reader: runtime.view::<V>(), actor: self.actor.clone() },
+            Backend::Local(runtime) => ViewInner::Local { runtime: runtime.clone(), actor: self.actor.clone() },
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => ViewInner::Remote(remote.clone()),
         };
-        ClientView { inner, predictor: self.predictor.clone() }
+        ClientView { inner, predictor: self.predictor.clone(), _view: PhantomData }
     }
 
     fn run<C>(
@@ -275,15 +274,14 @@ impl<R: fmt::Debug + fmt::Display> std::error::Error for ReadError<R> {}
 
 /// Reads one view through a [`Client`].
 pub struct ClientView<V: Apply> {
-    inner: ViewInner<V>,
+    inner: ViewInner,
     predictor: Arc<Predictor>,
+    _view: PhantomData<fn() -> V>,
 }
 
-enum ViewInner<V: Apply> {
-    Local {
-        reader: ViewReader<V>,
-        actor: Option<CurrentActor>,
-    },
+enum ViewInner {
+    /// Reads run as jobs on the runtime's thread.
+    Local { runtime: Runtime, actor: Option<CurrentActor> },
     #[cfg(not(target_arch = "wasm32"))]
     Remote(Arc<remote::Remote>),
 }
@@ -291,11 +289,11 @@ enum ViewInner<V: Apply> {
 impl<V: Apply> Clone for ClientView<V> {
     fn clone(&self) -> Self {
         let inner = match &self.inner {
-            ViewInner::Local { reader, actor } => ViewInner::Local { reader: reader.clone(), actor: actor.clone() },
+            ViewInner::Local { runtime, actor } => ViewInner::Local { runtime: runtime.clone(), actor: actor.clone() },
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => ViewInner::Remote(remote.clone()),
         };
-        Self { inner, predictor: self.predictor.clone() }
+        Self { inner, predictor: self.predictor.clone(), _view: PhantomData }
     }
 }
 
@@ -303,7 +301,10 @@ impl<V: Apply + Validate> ClientView<V> {
     /// The key's state, or `None` before its first event.
     pub fn get(&self, key: &V::Key) -> Pending<Read<V>> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => Pending::ready(checked::<V>(actor, key, reader.get(key))),
+            ViewInner::Local { runtime, actor } => {
+                let (key, actor) = (key.clone(), actor.clone());
+                read::<V, _>(runtime, move |memory| checked::<V>(&actor, &key, memory.view::<V>().get(&key)))
+            }
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => remote.get::<V>(key, None),
         }
@@ -312,10 +313,13 @@ impl<V: Apply + Validate> ClientView<V> {
     /// The key's state, once the view has applied `position`, such as a command's receipt.
     pub fn get_at_least(&self, key: &V::Key, position: impl Into<Position>) -> Pending<Read<V>> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => Pending::ready(match reader.get_at_least(key, position) {
-                Ok(state) => checked::<V>(actor, key, state),
-                Err(e) => Err(ReadError::NotCaughtUp(e)),
-            }),
+            ViewInner::Local { runtime, actor } => {
+                let (key, actor, position) = (key.clone(), actor.clone(), position.into());
+                read::<V, _>(runtime, move |memory| match memory.view::<V>().get_at_least(&key, position) {
+                    Ok(state) => checked::<V>(&actor, &key, state),
+                    Err(e) => Err(ReadError::NotCaughtUp(e)),
+                })
+            }
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => remote.get::<V>(key, Some(position.into())),
         }
@@ -324,9 +328,12 @@ impl<V: Apply + Validate> ClientView<V> {
     /// The key's state with the cursor it's valid at. Follow it with [`events`](Self::events).
     pub fn snapshot(&self, key: &V::Key) -> Pending<ReadResult<V, Snapshot<V>>> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => {
-                let snapshot = reader.snapshot(key);
-                Pending::ready(validate::<V>(actor.as_ref(), key, snapshot.state.as_ref()).map(|()| snapshot))
+            ViewInner::Local { runtime, actor } => {
+                let (key, actor) = (key.clone(), actor.clone());
+                read::<V, _>(runtime, move |memory| {
+                    let snapshot = memory.view::<V>().snapshot(&key);
+                    validate::<V>(actor.as_ref(), &key, snapshot.state.as_ref()).map(|()| snapshot)
+                })
             }
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => remote.snapshot::<V>(key),
@@ -336,9 +343,14 @@ impl<V: Apply + Validate> ClientView<V> {
     /// Up to `take` of the key's emitted events after `after`, oldest first.
     pub fn list(&self, key: &V::Key, after: Cursor, take: usize) -> Pending<ReadResult<V, Vec<Entry<V>>>> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => Pending::ready(
-                validate::<V>(actor.as_ref(), key, reader.get(key).as_ref()).map(|()| reader.list(key, after, take)),
-            ),
+            ViewInner::Local { runtime, actor } => {
+                let (key, actor) = (key.clone(), actor.clone());
+                read::<V, _>(runtime, move |memory| {
+                    let reader = memory.view::<V>();
+                    validate::<V>(actor.as_ref(), &key, reader.get(&key).as_ref())
+                        .map(|()| reader.list(&key, after, take))
+                })
+            }
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => remote.list::<V>(key, after, take),
         }
@@ -350,29 +362,36 @@ impl<V: Apply + Validate> ClientView<V> {
     /// reconnect, with another `CaughtUp`.
     pub fn events(&self, key: &V::Key, after: Cursor) -> Feed<V> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => {
-                if let Err(ReadError::Rejected(r)) = validate::<V>(actor.as_ref(), key, reader.get(key).as_ref()) {
-                    let (publisher, feed) = domain_memory::channel::<Frame<V>>(());
-                    publisher.push(Frame::Rejected(r));
-                    return feed;
-                }
-                let relay = Arc::new(FeedRelay {
-                    feed: reader.events(key, after),
-                    order: Mutex::new(()),
-                    out: Mutex::new(None),
-                    key: key.clone(),
-                    actor: actor.clone(),
-                    ended: AtomicBool::new(false),
-                });
-                // The caller's feed keeps the relay alive; the relay fills it.
-                let (publisher, out) = domain_memory::channel::<Frame<V>>(relay.clone());
-                *lock(&relay.out) = Some(publisher);
-                let weak = Arc::downgrade(&relay);
-                relay.feed.notify(move || {
-                    if let Some(relay) = weak.upgrade() {
-                        relay.pump();
-                    }
-                });
+            ViewInner::Local { runtime, actor } => {
+                // The caller's feed keeps the relay alive, once the runtime's thread has made it.
+                let slot = Arc::new(Mutex::new(None::<Arc<FeedRelay<V>>>));
+                let (publisher, out) = domain_memory::channel::<Frame<V>>(slot.clone());
+                let (key, actor) = (key.clone(), actor.clone());
+                runtime.exec(
+                    move |memory: &Memory| {
+                        let reader = memory.view::<V>();
+                        if let Err(ReadError::Rejected(r)) =
+                            validate::<V>(actor.as_ref(), &key, reader.get(&key).as_ref())
+                        {
+                            publisher.push(Frame::Rejected(r));
+                            return;
+                        }
+                        let relay = Arc::new(FeedRelay {
+                            feed: reader.events(&key, after),
+                            out: Mutex::new((publisher, key)),
+                            actor,
+                            ended: AtomicBool::new(false),
+                        });
+                        let weak = Arc::downgrade(&relay);
+                        relay.feed.notify(move || {
+                            if let Some(relay) = weak.upgrade() {
+                                relay.pump();
+                            }
+                        });
+                        *lock(&slot) = Some(relay);
+                    },
+                    |_| {},
+                );
                 out
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -384,34 +403,46 @@ impl<V: Apply + Validate> ClientView<V> {
     /// `validate` refuses the reader, now or after a change, it holds the rejection and stops.
     /// Commands the view predicts show at once, until their answers arrive.
     ///
-    /// In process it starts at the state now. Over a connection it starts at `Ok(None)`, version
-    /// 0, until the server's first answer arrives.
-    pub fn live(&self, key: &V::Key) -> LiveView<Read<V>> {
+    /// It starts at `Ok(None)`, version 0, until the first state arrives: from the runtime's
+    /// thread in process, or from the server over a connection.
+    ///
+    /// Readers on other threads share each value it shows, so it must be `Sync`.
+    pub fn live(&self, key: &V::Key) -> LiveView<Read<V>>
+    where
+        Read<V>: MaybeSync,
+    {
         match &self.inner {
-            ViewInner::Local { reader, actor } => {
-                let watch = reader.watch(key);
-                let initial = watch.try_next().expect("a watch starts with the state now").state;
-                let initial = checked::<V>(actor, key, initial);
-                let ended = AtomicBool::new(initial.is_err());
-                let overlay = Overlay::<V>::new(key.clone(), initial);
+            ViewInner::Local { runtime, actor } => {
+                let overlay = Overlay::<V>::new(key.clone(), Ok(None));
                 self.predictor.register(&overlay);
                 let target = overlay.target();
                 let pump = Arc::new(Pump {
-                    watch: Mutex::new(watch),
+                    watch: Mutex::new(None),
                     overlay,
                     requested: AtomicBool::new(false),
-                    key: key.clone(),
                     actor: actor.clone(),
-                    ended,
+                    ended: AtomicBool::new(false),
                 });
                 let live = LiveView::new(target, pump.clone());
-                // Weak, so the watch doesn't keep its own pump alive once the LiveView is gone.
+                // Weak, so neither the job nor the watch keeps the pump alive once the LiveView
+                // is gone.
                 let weak = Arc::downgrade(&pump);
-                lock(&pump.watch).notify(move || {
-                    if let Some(pump) = weak.upgrade() {
+                let key = key.clone();
+                runtime.exec(
+                    move |memory: &Memory| {
+                        let Some(pump) = weak.upgrade() else { return };
+                        let watch = memory.view::<V>().watch(&key);
+                        let weak = Arc::downgrade(&pump);
+                        watch.notify(move || {
+                            if let Some(pump) = weak.upgrade() {
+                                pump.pump();
+                            }
+                        });
+                        *lock(&pump.watch) = Some((watch, key));
                         pump.pump();
-                    }
-                });
+                    },
+                    |_| {},
+                );
                 live
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -422,6 +453,18 @@ impl<V: Apply + Validate> ClientView<V> {
             }
         }
     }
+}
+
+/// Runs `job` on the runtime's thread and resolves with what it returns.
+fn read<V: View, T: MaybeSend + 'static>(
+    runtime: &Runtime,
+    job: impl FnOnce(&Memory) -> ReadResult<V, T> + MaybeSend + 'static,
+) -> Pending<ReadResult<V, T>> {
+    let (pending, resolver) = pending();
+    runtime.exec(job, move |read| {
+        resolver.resolve(read.unwrap_or_else(|reason| Err(ReadError::Unavailable(format!("the read {reason}")))))
+    });
+    pending
 }
 
 fn validate<V: Validate>(
@@ -436,14 +479,14 @@ fn checked<V: Validate>(actor: &Option<CurrentActor>, key: &V::Key, state: Optio
     validate::<V>(actor.as_ref(), key, state.as_ref()).map(|()| state)
 }
 
-/// Moves states from a view's watch into a LiveView. The memory host calls `pump` with no lock
-/// held, from whichever thread committed the change.
+/// Moves states from a view's watch into a LiveView. The runtime's thread calls `pump` once the
+/// watch has news.
 struct Pump<V: Apply> {
-    watch: Mutex<Watch<V>>,
+    /// The watch and its key, once the runtime's thread has started it.
+    watch: Mutex<Option<(Watch<V>, V::Key)>>,
     overlay: Arc<Overlay<V>>,
     /// Set by a `pump` that found another one running; that one runs again for it.
     requested: AtomicBool,
-    key: V::Key,
     actor: Option<CurrentActor>,
     /// `validate` refused the reader, so nothing more is published.
     ended: AtomicBool,
@@ -454,12 +497,13 @@ impl<V: Apply + Validate> Pump<V> {
         self.requested.store(true, Ordering::SeqCst);
         loop {
             // One pump at a time, so states are published in the order they were applied.
-            let watch = match self.watch.try_lock() {
-                Ok(watch) => watch,
+            let guard = match self.watch.try_lock() {
+                Ok(guard) => guard,
                 Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
                 Err(TryLockError::WouldBlock) => return,
             };
             self.requested.store(false, Ordering::SeqCst);
+            let Some((watch, key)) = &*guard else { return };
             let mut latest = None;
             while let Some(snapshot) = watch.try_next() {
                 latest = Some(snapshot.state);
@@ -467,11 +511,11 @@ impl<V: Apply + Validate> Pump<V> {
             if let Some(state) = latest
                 && !self.ended.load(Ordering::SeqCst)
             {
-                let read = checked::<V>(&self.actor, &self.key, state);
+                let read = checked::<V>(&self.actor, key, state);
                 self.ended.store(read.is_err(), Ordering::SeqCst);
                 self.overlay.confirm(read);
             }
-            drop(watch);
+            drop(guard);
             if !self.requested.load(Ordering::SeqCst) {
                 return;
             }
@@ -482,25 +526,23 @@ impl<V: Apply + Validate> Pump<V> {
 /// Moves frames from a view's feed into the caller's, validating each entry.
 struct FeedRelay<V: Apply> {
     feed: domain_memory::Feed<V>,
-    /// Held while pumping, so frames go out in the order they were recorded.
-    order: Mutex<()>,
-    out: Mutex<Option<Publisher<Frame<V>>>>,
-    key: V::Key,
+    /// The caller's feed and the key. Held while pumping, so frames go out in the order they
+    /// were recorded.
+    out: Mutex<(Publisher<Frame<V>>, V::Key)>,
     actor: Option<CurrentActor>,
     ended: AtomicBool,
 }
 
 impl<V: Apply + Validate> FeedRelay<V> {
     fn pump(&self) {
-        let _order = lock(&self.order);
-        let out = lock(&self.out).clone();
-        let Some(out) = out else { return };
+        let out = lock(&self.out);
+        let (out, key) = &*out;
         for frame in self.feed.drain() {
             if self.ended.load(Ordering::SeqCst) {
                 return;
             }
             let frame = match frame {
-                Frame::Entry(entry) => match validate::<V>(self.actor.as_ref(), &self.key, Some(&entry.state)) {
+                Frame::Entry(entry) => match validate::<V>(self.actor.as_ref(), key, Some(&entry.state)) {
                     Ok(()) => Frame::Entry(entry),
                     Err(ReadError::Rejected(r)) => {
                         self.ended.store(true, Ordering::SeqCst);

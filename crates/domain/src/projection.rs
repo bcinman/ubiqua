@@ -1,8 +1,8 @@
 //! Projections and sagas: what reads events into a store you own, and what carries out a process
 //! that spans several aggregates.
 
+use crate::Rejections;
 use crate::host::{Keyed, Sources};
-use crate::{MaybeSend, MaybeSync, Rejections};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt::{Debug, Display};
@@ -25,10 +25,10 @@ pub trait Projection: Keyed {
 /// is refused after earlier ones succeeded, the steps' compensations undo them, last first.
 /// The struct is the run's input. Derive it with `#[derive(Saga)]`, then implement the host's
 /// handler trait (`domain_memory::Run`).
-pub trait Saga: Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static {
+pub trait Saga: Serialize + DeserializeOwned + 'static {
     const NAME: &'static str;
     /// Identifies one run: starting it again with the same key returns the same run.
-    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
+    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + 'static;
     /// Every way a run can be refused: `#[saga(rejects(..))]`.
     type Rejection: Rejections;
 }

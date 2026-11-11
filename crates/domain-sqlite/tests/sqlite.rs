@@ -6,6 +6,7 @@ use domain_memory::{Memory, PolicyCx, PolicyError, React};
 use domain_sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -306,7 +307,7 @@ fn a_new_policy_ignores_the_past_and_a_stored_one_acts_on_what_it_missed() {
         memory.send(&w("c"), Credit { amount: 5 }).unwrap(); // never credited again
     }
 
-    let with_bonus = || Arc::new(db.open::<WalletsOnly>().policy(Bonus));
+    let with_bonus = || Rc::new(db.open::<WalletsOnly>().policy(Bonus));
     let memory = with_bonus();
     memory.run_due();
     assert_eq!(memory.state(&w("a-bonus")), 0, "new: the past isn't acted on");
@@ -328,7 +329,7 @@ fn a_schedule_fires_after_a_restart_once() {
     let db = TempDb::new("schedules");
     let open_at = |ms: u64| {
         let memory = Memory::with_clock(move || Timestamp::from_millis(ms));
-        Arc::new(memory.persist_to(Sqlite::open(&db.0).unwrap()).with::<WalletsOnly>())
+        Rc::new(memory.persist_to(Sqlite::open(&db.0).unwrap()).with::<WalletsOnly>())
     };
     let memory = open_at(1_000);
     memory.schedule(&w("a"), Note, Timestamp::from_millis(5_000), "note-1").unwrap();
@@ -393,17 +394,17 @@ fn a_projection_writes_what_it_missed_and_all_of_history_when_its_version_change
     let written = Arc::new(std::sync::Mutex::new(Vec::new()));
     let take = || std::mem::take(&mut *written.lock().unwrap());
     {
-        let memory = Arc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone())));
+        let memory = Rc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone())));
         memory.send(&w("a"), Credit { amount: 5 }).unwrap();
         memory.run_due();
     }
     db.open::<WalletsOnly>().send(&w("a"), Credit { amount: 1 }).unwrap();
     assert_eq!(take(), [("a".to_string(), 1)]);
 
-    Arc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone()))).run_due();
+    Rc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone()))).run_due();
     assert_eq!(take(), [("a".to_string(), 2)], "only what it missed");
 
-    Arc::new(db.open::<WalletsOnly>().projection(p1::Rows(written.clone()))).run_due();
+    Rc::new(db.open::<WalletsOnly>().projection(p1::Rows(written.clone()))).run_due();
     assert_eq!(take(), [("a".to_string(), 1), ("a".to_string(), 2)], "a new version gets all of history");
 }
 
@@ -428,7 +429,7 @@ impl domain_memory::Run for Pay {
 fn a_saga_run_carries_on_after_a_restart_without_repeating_its_steps() {
     use domain_memory::SagaStatus;
     let db = TempDb::new("sagas");
-    let open = || Arc::new(db.open::<WalletsOnly>().saga::<Pay>());
+    let open = || Rc::new(db.open::<WalletsOnly>().saga::<Pay>());
     {
         let memory = open();
         memory.start_saga(&w("a"), Pay).unwrap();
@@ -483,7 +484,10 @@ fn in_a_batch_a_failed_write_is_dropped_alone_and_the_rest_commit_together() {
 #[test]
 fn commands_sent_through_a_runtime_without_waiting_are_all_stored() {
     let db = TempDb::new("runtime");
-    let runtime = domain_memory::Runtime::spawn(db.open::<v0::Wallets>());
+    let path = db.0.clone();
+    let runtime = domain_memory::Runtime::spawn(move || {
+        Memory::new().persist_to(Sqlite::open(&path).unwrap()).with::<v0::Wallets>()
+    });
     let (answer, answers) = std::sync::mpsc::channel();
     for _ in 0..200 {
         let answer = answer.clone();

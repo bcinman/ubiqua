@@ -11,10 +11,10 @@ use domain::{
     SendError, StreamId, Timestamp,
 };
 use domain_memory::{Memory, Project, React, Run, SagaStatus, StubbedCall};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::rc::Rc;
 use std::time::Duration;
 
 type AggregateOf<I> = <I as AggregateId>::Aggregate;
@@ -22,8 +22,8 @@ type EventOf<I> = <AggregateOf<I> as Aggregate>::Event;
 
 /// The model's history and clock. Start one with [`Story::new`].
 pub struct Story {
-    memory: Arc<Memory>,
-    clock: Arc<AtomicU64>,
+    memory: Rc<Memory>,
+    clock: Rc<Cell<u64>>,
     /// How far each stream's events have been accounted for.
     seen: HashMap<StreamId, u64>,
     /// Who sends the commands, from `acting_as`.
@@ -55,10 +55,10 @@ impl<S: Run> HostSaga<S> for Sagas {
 impl Story {
     /// An empty history, with the clock at the Unix epoch.
     pub fn new() -> Self {
-        let clock = Arc::new(AtomicU64::new(0));
+        let clock = Rc::new(Cell::new(0));
         let now = clock.clone();
-        let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::Relaxed))).stub_calls();
-        Self { memory: Arc::new(memory), clock, seen: HashMap::new(), actor: None }
+        let memory = Memory::with_clock(move || Timestamp::from_millis(now.get())).stub_calls();
+        Self { memory: Rc::new(memory), clock, seen: HashMap::new(), actor: None }
     }
 
     /// Runs the model's views and sagas too, so `view` and `emitted` can check them. Its policies
@@ -89,8 +89,8 @@ impl Story {
 
     fn build(self, f: impl FnOnce(Memory) -> Memory) -> Self {
         let Story { memory, clock, seen, actor } = self;
-        let memory = Arc::try_unwrap(memory).unwrap_or_else(|_| panic!("story: set it up before `given` and `when`"));
-        Story { memory: Arc::new(f(memory)), clock, seen, actor }
+        let memory = Rc::try_unwrap(memory).unwrap_or_else(|_| panic!("story: set it up before `given` and `when`"));
+        Story { memory: Rc::new(f(memory)), clock, seen, actor }
     }
 
     /// History: events already recorded on `id`, written without deciding any command.
@@ -110,16 +110,16 @@ impl Story {
     /// # Panics
     /// When `now` is earlier than the clock.
     pub fn at(self, now: Timestamp) -> Self {
-        let before = Timestamp::from_millis(self.clock.load(Ordering::Relaxed));
+        let before = Timestamp::from_millis(self.clock.get());
         assert!(now >= before, "story: the clock only moves forward, from {before:?} to {now:?}");
-        self.clock.store(now.as_millis(), Ordering::Relaxed);
+        self.clock.set(now.as_millis());
         self.run();
         self
     }
 
     /// Moves the clock forward. Scheduled commands now due run.
     pub fn advance(self, by: Duration) -> Self {
-        let now = Timestamp::from_millis(self.clock.load(Ordering::Relaxed)).after(by);
+        let now = Timestamp::from_millis(self.clock.get()).after(by);
         self.at(now)
     }
 

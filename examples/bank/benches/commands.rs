@@ -1,5 +1,6 @@
 //! Sending commands in memory: what every command costs before storage or the network, alone and
-//! with the views that read it, and how it holds up across many accounts and threads.
+//! with the views that read it, and how it holds up across many accounts. A memory belongs to one
+//! thread; `client.rs` measures other threads sending to it through a `Runtime`.
 
 mod common;
 
@@ -7,8 +8,6 @@ use bank::*;
 use common::*;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
-
-const THREADS: u64 = 4;
 
 fn send(c: &mut Criterion) {
     let mut group = c.benchmark_group("send");
@@ -99,50 +98,9 @@ fn send(c: &mut Criterion) {
     group.finish();
 }
 
-/// Commands from several threads at once, with and without the bank's views. Different accounts
-/// should run in parallel; one account takes its commands one at a time. Throughput is commands
-/// per second across all threads; compare it with `send/deposit` and `send/deposit_with_views`.
-fn send_parallel(c: &mut Criterion) {
-    let mut group = c.benchmark_group("send_parallel");
-    group.throughput(Throughput::Elements(1));
-
-    for views in [false, true] {
-        for (name, same_account) in [("own_account_per_thread", false), ("same_account", true)] {
-            let name = if views { format!("{name}_with_views") } else { name.to_string() };
-            group.bench_function(format!("{THREADS}_threads/{name}"), |b| {
-                b.iter_custom(|iters| {
-                    chunked(
-                        iters,
-                        CHUNK,
-                        || {
-                            let bank = if views { memory().with::<BankViews>() } else { memory() };
-                            open(&bank, THREADS, 0);
-                            bank
-                        },
-                        |bank, range| {
-                            let each = range.end.saturating_sub(range.start).div_ceil(THREADS);
-                            std::thread::scope(|s| {
-                                for t in 0..THREADS {
-                                    let id = account(if same_account { 0 } else { t });
-                                    s.spawn(move || {
-                                        for _ in 0..each {
-                                            black_box(bank.send(&id, DepositMoney { amount: 1 }).unwrap());
-                                        }
-                                    });
-                                }
-                            });
-                        },
-                    )
-                })
-            });
-        }
-    }
-    group.finish();
-}
-
 criterion_group! {
     name = benches;
     config = config();
-    targets = send, send_parallel
+    targets = send
 }
 criterion_main!(benches);

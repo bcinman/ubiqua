@@ -5,19 +5,19 @@
 use crate::calls::{BoxFuture, unbox};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
-use crate::{Acting, AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, lock, reason};
+use crate::{Acting, AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, reason};
 use domain::host::{CurrentActor, PolicySources, Reacts, SourcePayload};
 use domain::{
     AggregateId, Answered, Call, Command, CommandId, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects, Policy,
     Receipt, SendError, Source, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::rc::{Rc, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -30,11 +30,7 @@ use std::time::Duration;
 /// ```
 pub trait React: Policy {
     /// Acts on one event. Return `Err` to have it run again later for the same event.
-    fn react(
-        &self,
-        cx: &PolicyCx<Self>,
-        input: Self::Input,
-    ) -> impl Future<Output = Result<(), PolicyError>> + MaybeSend;
+    fn react(&self, cx: &PolicyCx<Self>, input: Self::Input) -> impl Future<Output = Result<(), PolicyError>>;
 }
 
 /// Why a policy's handler failed. Any error converts with `?`.
@@ -67,14 +63,14 @@ impl fmt::Debug for PolicyError {
 /// What a policy may read and do while it handles one event.
 pub struct PolicyCx<P: Policy> {
     memory: Weak<Memory>,
-    delivery: Arc<Delivery>,
+    delivery: Rc<Delivery>,
     /// Counts the command ids handed out, so a second run derives the same ones.
-    ids: AtomicU32,
+    ids: Cell<u32>,
     _policy: PhantomData<fn() -> P>,
 }
 
 impl<P: Policy> PolicyCx<P> {
-    fn memory(&self) -> Arc<Memory> {
+    fn memory(&self) -> Rc<Memory> {
         self.memory.upgrade().expect("a policy runs while its memory is alive")
     }
 
@@ -115,7 +111,8 @@ impl<P: Policy> PolicyCx<P> {
     /// The next command id derived from this event: the same, in the same order, every time the
     /// policy runs for it. [`send`](Self::send) and [`schedule`](Self::schedule) use these.
     pub fn next_command_id(&self) -> CommandId {
-        let n = self.ids.fetch_add(1, Ordering::Relaxed) + 1;
+        let n = self.ids.get() + 1;
+        self.ids.set(n);
         CommandId::new(format!("{}:{}:{}:{n}", P::NAME, self.delivery.stream, self.delivery.seq))
     }
 
@@ -203,9 +200,9 @@ pub(crate) enum Next {
 }
 
 /// A policy as `Memory::run_due` sees it.
-pub(crate) trait PolicyRun: MaybeSend + MaybeSync {
+pub(crate) trait PolicyRun {
     /// Handles deliveries in order until one waits or fails, or none is left.
-    fn run(&self, memory: &Arc<Memory>, waker: &Waker) -> Next;
+    fn run(&self, memory: &Rc<Memory>, waker: &Waker) -> Next;
     /// What's failing now, until it succeeds.
     fn failures(&self) -> Vec<String>;
 }
@@ -218,11 +215,11 @@ fn route_of<P: Reacts<S>, S: Source>(delivery: &Delivery) -> Option<P::Input> {
 }
 
 pub(crate) struct PolicyHost<P: React> {
-    policy: Arc<P>,
+    policy: Rc<P>,
     routes: HashMap<TypeId, RouteFn<P>>,
-    inbox: Mutex<VecDeque<Arc<Delivery>>>,
-    running: Mutex<Running>,
-    store: Option<Arc<dyn Store>>,
+    inbox: RefCell<VecDeque<Rc<Delivery>>>,
+    running: RefCell<Running>,
+    store: Option<Rc<dyn Store>>,
 }
 
 struct Running {
@@ -242,7 +239,7 @@ impl<P: React> PolicyHost<P> {
 
     /// Marks the front delivery handled.
     fn done(&self, running: &mut Running, delivery: &Delivery) {
-        lock(&self.inbox).pop_front();
+        self.inbox.borrow_mut().pop_front();
         running.progress.insert(delivery.stream.clone(), delivery.seq);
         if let Some(store) = &self.store {
             // If this fails, a restart runs the event again, which is safe.
@@ -253,10 +250,10 @@ impl<P: React> PolicyHost<P> {
 }
 
 impl<P: React> PolicyRun for PolicyHost<P> {
-    fn run(&self, memory: &Arc<Memory>, waker: &Waker) -> Next {
-        let mut running = lock(&self.running);
+    fn run(&self, memory: &Rc<Memory>, waker: &Waker) -> Next {
+        let mut running = self.running.borrow_mut();
         loop {
-            let Some(delivery) = lock(&self.inbox).front().cloned() else { return Next::Idle };
+            let Some(delivery) = self.inbox.borrow_mut().front().cloned() else { return Next::Idle };
             if running.current.is_none() {
                 if let Some(at) = running.retry_at
                     && memory.now() < at
@@ -270,9 +267,9 @@ impl<P: React> PolicyRun for PolicyHost<P> {
                     continue;
                 };
                 let cx = PolicyCx::<P> {
-                    memory: Arc::downgrade(memory),
+                    memory: Rc::downgrade(memory),
                     delivery: delivery.clone(),
-                    ids: AtomicU32::new(0),
+                    ids: Cell::new(0),
                     _policy: PhantomData,
                 };
                 let policy = self.policy.clone();
@@ -310,13 +307,13 @@ impl<P: React> PolicyRun for PolicyHost<P> {
     }
 
     fn failures(&self) -> Vec<String> {
-        lock(&self.running).failure.iter().cloned().collect()
+        self.running.borrow_mut().failure.iter().cloned().collect()
     }
 }
 
 impl<P: React> Consumer for PolicyHost<P> {
-    fn push(&self, delivery: Arc<Delivery>) {
-        lock(&self.inbox).push_back(delivery);
+    fn push(&self, delivery: Rc<Delivery>) {
+        self.inbox.borrow_mut().push_back(delivery);
     }
 
     // A policy runs in `Memory::run_due`, not in the commit's thread.
@@ -328,11 +325,11 @@ impl<P: React> Consumer for PolicyHost<P> {
         None
     }
 
-    fn history(&self) -> Vec<Arc<Delivery>> {
+    fn history(&self) -> Vec<Rc<Delivery>> {
         Vec::new()
     }
 
-    fn add_downstream(&self, _: Arc<dyn Consumer>) {}
+    fn add_downstream(&self, _: Rc<dyn Consumer>) {}
 }
 
 impl Memory {
@@ -354,11 +351,11 @@ impl Memory {
         });
         let mut routes = Routes::<P> { routes: HashMap::new() };
         P::sources(&mut routes);
-        let host = Arc::new(PolicyHost {
-            policy: Arc::new(policy),
+        let host = Rc::new(PolicyHost {
+            policy: Rc::new(policy),
             routes: routes.routes,
-            inbox: Mutex::default(),
-            running: Mutex::new(Running {
+            inbox: RefCell::default(),
+            running: RefCell::new(Running {
                 current: None,
                 attempts: 0,
                 retry_at: None,
@@ -393,12 +390,12 @@ impl Memory {
         }
 
         {
-            let mut running = lock(&host.running);
+            let mut running = host.running.borrow_mut();
             running.progress = progress.clone();
             if stored.is_some() {
                 // Act on what it missed, oldest first.
                 history.sort_by(|a, b| a.order().cmp(&b.order()));
-                lock(&host.inbox).extend(history);
+                host.inbox.borrow_mut().extend(history);
             } else {
                 // New: start from now.
                 for delivery in &history {

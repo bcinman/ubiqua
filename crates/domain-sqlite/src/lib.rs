@@ -9,8 +9,8 @@
 
 use domain_memory::store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::cell::RefCell;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 const SCHEMA: &str = "
     PRAGMA journal_mode = WAL;
@@ -72,7 +72,7 @@ const SCHEMA: &str = "
 
 /// A [`Store`] in one SQLite file. Pass it to `Memory::persist_to`.
 pub struct Sqlite {
-    connection: Mutex<Connection>,
+    connection: RefCell<Connection>,
 }
 
 impl Sqlite {
@@ -80,15 +80,11 @@ impl Sqlite {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let connection = Connection::open(path).map_err(error)?;
         connection.execute_batch(SCHEMA).map_err(error)?;
-        Ok(Self { connection: Mutex::new(connection) })
+        Ok(Self { connection: RefCell::new(connection) })
     }
 
     fn run<T>(&self, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> Result<T, StoreError> {
-        f(&mut self.lock()).map_err(error)
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        f(&mut self.connection.borrow_mut()).map_err(error)
     }
 }
 

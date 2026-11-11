@@ -715,7 +715,7 @@ fn external_system(input: &DeriveInput) -> syn::Result<Tokens> {
         impl<__I> ::domain::host::Adapter<__I> for #name
         where #( __I: ::domain::Answer<#calls>, )*
         {
-            fn register<__R: ::domain::host::Calls>(adapter: ::std::sync::Arc<__I>, calls: &mut __R) {
+            fn register<__R: ::domain::host::Calls>(adapter: ::std::rc::Rc<__I>, calls: &mut __R) {
                 let _ = &adapter;
                 #( calls.answer::<#calls, __I>(::std::clone::Clone::clone(&adapter)); )*
             }

@@ -21,7 +21,6 @@ cargo test -p bank --benches                         # run each benchmark once, 
 | A command's cost in memory | `commands`: `send/deposit`, `send/rejected`, `send/retry` | The floor under everything: decide, evolve, commit. A refusal should cost about a decision; a retry, a lookup. |
 | What views add to a command | `send/deposit_with_views` | Each command is applied to every view that reads it before `send` returns. |
 | Scale with many accounts | `send/deposit_with_views_across_10k_accounts`, `read/summary_among_10k_accounts` | Finding one instance or key should not slow down as there are more. |
-| Parallel throughput | `send_parallel/4_threads/*` | Commands to different accounts should run in parallel; to one account, one at a time. Compare with the single-threaded `send/*`. |
 | Reads | `views`: `read/*` | What a UI pays for each `get` and each page of a list. |
 | Replaying history | `replay/bank_views/*` | How long a view added to existing events, or changed, takes to catch up. Throughput is events per second, so it should stay flat as the history grows. |
 | A durable command | `storage`: `sqlite/send/*` | With SQLite, the transactions per command, with and without views saving theirs. |
@@ -31,4 +30,4 @@ cargo test -p bank --benches                         # run each benchmark once, 
 | What an app waits for | `client`: `client/in_process/*`, `client/websocket/*` | A receipt or a read through a `Client`, from the runtime's thread or over a WebSocket on loopback, and how long a change takes to reach another client's live view. |
 | Commands in flight | `client/in_process/send_*_in_flight`, `client/sqlite/*` | How many commands go through when an app or several apps send without waiting, in memory and with SQLite, where a runtime commits each batch in one transaction. |
 
-`storage` writes real files in the system's temporary directory, so it measures that disk too. `send_parallel` uses 4 threads; it needs at least 4 cores to show parallelism.
+`storage` writes real files in the system's temporary directory, so it measures that disk too. A memory belongs to one thread, so there's no in-memory parallel benchmark: `client/in_process/send_from_4_threads_*` measures four threads sending to one runtime.

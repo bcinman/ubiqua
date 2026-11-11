@@ -98,10 +98,10 @@ bank.append(&sam, [AccountOpened { owner: "sam".into() }]);   // no decide; evol
 
 ## One thread changes it
 
-An app or a server hands its `Memory` to a `Runtime`. Its thread makes every change: commands, views, policies, schedules and the store's writes. Everything else sends it jobs:
+A `Memory` belongs to one thread: nothing in it is locked, and the model's types needn't be `Sync`. An app or a server starts a `Runtime`, whose thread builds the `Memory` and owns it. That thread does all the work: commands, reads, views, policies, schedules and the store's writes. Everything else sends it jobs:
 
 ```rust
-let bank = Runtime::spawn(Memory::new().with::<Bank>());   // Clone to share
+let bank = Runtime::spawn(|| Memory::new().with::<Bank>());   // Clone to share
 let client = Client::<BankApi>::in_process(bank.clone());
 let server = Server::<BankApi>::new(bank.clone()).listen("0.0.0.0:7878")?;
 
@@ -109,13 +109,13 @@ bank.exec(|memory| memory.send(&sam, DepositMoney { amount: 1 }), |sent| show(se
 let events = bank.call(|memory| memory.events(&sam))?;    // waits; for tests and scripts
 ```
 
-Reads don't queue: view readers and telemetry read from the caller's thread.
+Reads queue too. A client's `get` or the server's runs as a job, and a live view or feed is started by one, then fed from the runtime's thread. Open the store inside the closure, since the store stays on that thread too.
 
 The runtime runs the jobs that queued up together, as one batch. With [SQLite](storage.md), a batch is one transaction, so many commands reach the disk with one write. Each job's answer goes out once its batch is stored. If a batch can't be stored, the runtime answers `Unavailable` from then on: restart to carry on from what the file holds.
 
-`Runtime::inline(memory)` runs each job on the thread that hands it in, for tests and the web.
+On the web there are no threads: `Runtime::spawn` builds the memory at once, and runs each job on the page's thread as it's handed in.
 
-`Memory` itself also works from several threads, as tests do: commands to one instance queue, and commands to different instances run in parallel.
+Tests and scripts can use a `Memory` directly, on their own thread.
 
 ## Keep it on disk
 
@@ -128,7 +128,7 @@ See [Keep it on disk](storage.md).
 ## Policies and schedules
 
 ```rust
-let bank = Arc::new(Memory::new().with::<Bank>().external(FraudCheck, Vendor));   // Bank lists FraudReview
+let bank = Rc::new(Memory::new().with::<Bank>().external(FraudCheck, Vendor));   // Bank lists FraudReview
 let next = bank.run_due();        // runs what's due; Some(when) to call it again
 ```
 

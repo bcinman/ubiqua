@@ -1,6 +1,5 @@
 use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply, SendError};
-use domain_memory::Memory;
-use std::sync::Arc;
+use domain_memory::{Memory, Runtime};
 
 domain::id!(
     struct CounterId;
@@ -115,27 +114,29 @@ fn a_command_that_panics_part_way_through_commits_nothing() {
 
 #[test]
 fn an_instance_decides_one_command_at_a_time() {
-    let memory = Arc::new(Memory::new());
+    let runtime = Runtime::spawn(Memory::new);
     let threads: Vec<_> = (0..8)
         .map(|_| {
-            let memory = memory.clone();
+            let runtime = runtime.clone();
             std::thread::spawn(move || {
                 for _ in 0..200 {
-                    memory.send(&counter(), Increment).unwrap();
+                    runtime.call(|m| m.send(&counter(), Increment).map(drop)).unwrap().unwrap();
                 }
             })
         })
         .collect();
     threads.into_iter().for_each(|t| t.join().unwrap());
+    let memory = runtime;
 
     // Each decision saw the state the previous one left, so the values count up with no repeats.
     let values: Vec<u64> = memory
-        .events(&counter())
+        .call(|m| m.events(&counter()))
+        .unwrap()
         .into_iter()
         .map(|e| match e.event {
             CounterEvent::Incremented(e) => e.value_after,
         })
         .collect();
     assert_eq!(values, (1..=1600).collect::<Vec<_>>());
-    assert_eq!(memory.state(&counter()), 1600);
+    assert_eq!(memory.call(|m| m.state(&counter())).unwrap(), 1600);
 }

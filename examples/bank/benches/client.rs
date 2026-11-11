@@ -14,6 +14,7 @@ use domain_server::{Listening, Server};
 use domain_sqlite::Sqlite;
 use std::collections::VecDeque;
 use std::hint::black_box;
+use std::path::Path;
 use std::time::Duration;
 
 /// Commands an app keeps in flight when it sends without waiting for each answer.
@@ -22,13 +23,13 @@ const IN_FLIGHT: usize = 64;
 /// Commands per fresh database.
 const DB_CHUNK: u64 = 1_000;
 
-/// The bank running on a domain thread of its own, as an app runs it.
-fn local(memory: Memory) -> Client<BankApi> {
-    Client::in_process(Runtime::spawn(memory))
+/// The bank `build` makes, running on a domain thread of its own, as an app runs it.
+fn local(build: impl FnOnce() -> Memory + Send + 'static) -> Client<BankApi> {
+    Client::in_process(Runtime::spawn(build))
 }
 
-fn serve(memory: Memory) -> Listening {
-    Server::<BankApi>::new(Runtime::spawn(memory)).listen("127.0.0.1:0").unwrap()
+fn serve(build: impl FnOnce() -> Memory + Send + 'static) -> Listening {
+    Server::<BankApi>::new(Runtime::spawn(build)).listen("127.0.0.1:0").unwrap()
 }
 
 /// The whole bank, opened with accounts `0..accounts`.
@@ -38,9 +39,8 @@ fn opened(accounts: u64) -> Memory {
     bank
 }
 
-/// The same, kept in a fresh SQLite file in `dir`.
-fn stored(dir: &TempDir, n: u64, accounts: u64) -> Memory {
-    let path = dir.path().join(format!("{n}.db"));
+/// The same, kept in a fresh SQLite file at `path`.
+fn stored(path: &Path, accounts: u64) -> Memory {
     let bank = memory().persist_to(Sqlite::open(path).unwrap()).with::<Bank>().external(FraudCheck, Safe);
     open(&bank, accounts, 0);
     bank
@@ -82,7 +82,7 @@ fn in_process(c: &mut Criterion) {
             chunked(
                 iters,
                 CHUNK,
-                || local(opened(1)),
+                || local(|| opened(1)),
                 |client, range| range.for_each(|_| drop(black_box(block_on(deposit(client, &id)).unwrap()))),
             )
         })
@@ -94,7 +94,7 @@ fn in_process(c: &mut Criterion) {
             chunked(
                 iters,
                 CHUNK,
-                || local(opened(1)),
+                || local(|| opened(1)),
                 |client, range| pipelined(client, &id, range.end - range.start, IN_FLIGHT),
             )
         })
@@ -107,7 +107,7 @@ fn in_process(c: &mut Criterion) {
                 iters,
                 CHUNK,
                 || {
-                    let client = local(opened(4));
+                    let client = local(|| opened(4));
                     vec![client.clone(), client.clone(), client.clone(), client]
                 },
                 |clients, range| from_threads(clients, range, IN_FLIGHT),
@@ -115,7 +115,7 @@ fn in_process(c: &mut Criterion) {
         })
     });
 
-    let client = local(opened(1));
+    let client = local(|| opened(1));
     group.bench_function("read", |b| b.iter(|| black_box(block_on(client.view::<AccountSummary>().get(&id)).unwrap())));
     group.finish();
 }
@@ -129,9 +129,9 @@ fn sqlite(c: &mut Criterion) {
     let dir = TempDir::new("client");
     let id = account(0);
     let mut n = 0;
-    let mut fresh = |accounts| {
+    let mut fresh = || {
         n += 1;
-        stored(&dir, n, accounts)
+        dir.path().join(format!("{n}.db"))
     };
 
     for in_flight in [1, IN_FLIGHT] {
@@ -140,7 +140,10 @@ fn sqlite(c: &mut Criterion) {
                 chunked(
                     iters,
                     DB_CHUNK,
-                    || local(fresh(1)),
+                    || {
+                        let path = fresh();
+                        local(move || stored(&path, 1))
+                    },
                     |client, range| pipelined(client, &id, range.end - range.start, in_flight),
                 )
             })
@@ -154,7 +157,8 @@ fn sqlite(c: &mut Criterion) {
                 iters,
                 DB_CHUNK,
                 || {
-                    let server = serve(fresh(4));
+                    let path = fresh();
+                    let server = serve(move || stored(&path, 4));
                     let clients: Vec<_> = (0..4).map(|_| Client::<BankApi>::connect(&server.url(), None)).collect();
                     // Wait for each connection, so the first sample doesn't include it.
                     for (t, client) in clients.iter().enumerate() {
@@ -174,7 +178,7 @@ fn websocket(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     let id = account(0);
 
-    let server = serve(opened(1));
+    let server = serve(|| opened(1));
     let client = Client::<BankApi>::connect(&server.url(), None);
     // Wait for the connection, so the first sample doesn't include it.
     block_on(deposit(&client, &id)).unwrap();

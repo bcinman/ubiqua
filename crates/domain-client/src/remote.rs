@@ -7,7 +7,9 @@ use crate::predict::Overlay;
 use crate::{AggregateOf, Connection, Read, ReadError, ReadResult, Sent};
 use domain::telemetry::{Since, Trace};
 use domain::wire::{self, At, Body, Failure, Op, Request, Response};
-use domain::{Apply, Command, CommandId, Cursor, Entry, Frame, Handles, Position, SendError, Snapshot, Validate, View};
+use domain::{
+    Apply, Command, CommandId, Cursor, Entry, Frame, Handles, MaybeSync, Position, SendError, Snapshot, Validate, View,
+};
 use domain_memory::{Feed, TraceFeed};
 use domain_websocket::{ClientTls, ConnectError, Message, Writer};
 use serde::Serialize;
@@ -203,7 +205,10 @@ impl Remote {
         self: &Arc<Self>,
         key: &V::Key,
         overlay: Arc<Overlay<V>>,
-    ) -> LiveView<Read<V>> {
+    ) -> LiveView<Read<V>>
+    where
+        Read<V>: MaybeSync,
+    {
         let target = overlay.target();
         let key = match encode(key) {
             Ok(key) => key,

@@ -60,27 +60,27 @@ pub mod prelude {
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.
 /// It's stored, so it also serializes.
-pub trait Event: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static {
+pub trait Event: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static {
     const NAME: &'static str;
 }
 
 /// A reason a command or a read was refused. Derive it with `#[derive(Rejection)]`.
 /// It serializes, so a client across a network gets it by name.
 pub trait Rejection:
-    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
+    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + 'static
 {
     const NAME: &'static str;
 }
 
 /// A set of events, as an enum with one variant per event. The derives generate these.
-pub trait Events: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static {
+pub trait Events: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static {
     /// The `Event::NAME` of the variant.
     fn name(&self) -> &'static str;
 }
 
 /// A set of rejections, as an enum with one variant per rejection. `#[derive(Command)]` generates these.
 pub trait Rejections:
-    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
+    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + 'static
 {
     /// The `Rejection::NAME` of the variant.
     fn name(&self) -> &'static str;
@@ -136,18 +136,18 @@ tuple_events!(A, B, C, D, F, G, H, I, J, K, L, M);
 /// The id of one aggregate instance. Each id type belongs to exactly one aggregate, so a command's
 /// target names the aggregate that decides it. `#[derive(Aggregate)]` implements it.
 pub trait AggregateId:
-    Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
+    Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + 'static
 {
     type Aggregate: Aggregate<Id = Self>;
 }
 
 /// A consistency boundary: one instance per id, deciding one command at a time.
 /// Derive it with `#[derive(Aggregate)]`, then implement [`Evolve`] and one [`Decide`] per command.
-pub trait Aggregate: Sized + MaybeSend + MaybeSync + 'static {
+pub trait Aggregate: Sized + 'static {
     const NAME: &'static str;
     type Id: AggregateId<Aggregate = Self>;
     /// `Default` is the state of every instance before its first event.
-    type State: Clone + Debug + Default + MaybeSend + MaybeSync + 'static;
+    type State: Clone + Debug + Default + 'static;
     type Event: Events;
 
     /// Registers each command it decides. `#[derive(Aggregate)]` implements it.
@@ -172,7 +172,7 @@ pub trait Command: Debug + Serialize + DeserializeOwned + MaybeSend + 'static {
     type Rejection: Rejections;
     /// What the caller gets back once its events commit.
     /// Stored with the receipt, so a retry gets the same reply.
-    type Reply: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
+    type Reply: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static;
 }
 
 /// A command that declares no rejections, so it can run when nobody waits for its answer, as a

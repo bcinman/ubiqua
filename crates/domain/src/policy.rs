@@ -1,11 +1,11 @@
 //! Policies: business rules that run after events. "Whenever a customer registers, open their
 //! main account." A host delivers each event to the policies that react to it.
 
-use crate::{Events, MaybeSend, MaybeSync, Source};
+use crate::{Events, Source};
 
 /// Reacts to events from aggregates or views, after they commit. Derive it with
 /// `#[derive(Policy)]`, then implement the host's handler trait (`domain_memory::React`).
-pub trait Policy: Sized + MaybeSend + MaybeSync + 'static {
+pub trait Policy: Sized + 'static {
     const NAME: &'static str;
     /// The events it reacts to, as an enum. The derive generates it.
     type Input: Events;

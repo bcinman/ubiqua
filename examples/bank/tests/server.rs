@@ -20,7 +20,7 @@ fn serve(memory: &Runtime, addr: &str) -> Listening {
 }
 
 fn bank() -> Runtime {
-    Runtime::spawn(Memory::new().with::<Bank>())
+    Runtime::spawn(|| Memory::new().with::<Bank>())
 }
 
 fn sam() -> AccountId {

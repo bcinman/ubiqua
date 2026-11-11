@@ -104,19 +104,29 @@ fn memory() -> Memory {
     Memory::new().with::<Counting>()
 }
 
+/// The model on a domain thread of its own.
+fn runtime() -> Runtime {
+    Runtime::spawn(memory)
+}
+
+/// Waits until the domain thread has run every job handed to it so far: a read queues behind them.
+fn settled(client: &Client<CountingApi>) {
+    let _ = block_on(client.view::<Total>().get(&c("settled")));
+}
+
 #[test]
-fn an_inline_client_resolves_sends_at_once() {
-    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
-    let receipt = client.send(&c("a"), Add { n: 2 }).try_get().unwrap().unwrap();
+fn a_send_resolves_to_its_receipt_or_its_rejection() {
+    let client = Client::<CountingApi>::in_process(runtime());
+    let receipt = block_on(client.send(&c("a"), Add { n: 2 })).unwrap();
     assert_eq!((receipt.reply, receipt.version), (2, 1));
 
-    let refused = client.send(&c("a"), Add { n: 5000 }).try_get().unwrap();
+    let refused = block_on(client.send(&c("a"), Add { n: 5000 }));
     assert_eq!(refused.unwrap_err().rejection(), Some(&AddRejection::TooBig(TooBig)));
 }
 
 #[test]
 fn an_in_process_client_runs_commands_on_its_domain_thread_in_order() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let (tx, rx) = mpsc::channel();
     for n in 1..=50 {
         let tx = tx.clone();
@@ -132,7 +142,7 @@ fn an_in_process_client_runs_commands_on_its_domain_thread_in_order() {
 
 #[test]
 fn a_pending_send_can_be_awaited_or_polled_each_frame() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let awaited = block_on(client.send(&c("a"), Add { n: 4 })).unwrap();
     assert_eq!(awaited.reply, 4);
 
@@ -151,7 +161,7 @@ fn a_pending_send_can_be_awaited_or_polled_each_frame() {
 
 #[test]
 fn a_command_that_panics_is_unavailable_and_the_domain_thread_keeps_going() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let error = block_on(client.send(&c("a"), Add { n: 666 })).unwrap_err();
     let SendError::Unavailable { command_id, reason } = error else { panic!("{error:?}") };
     assert!(reason.contains("Counter can't add 666"), "{reason}");
@@ -163,16 +173,17 @@ fn a_command_that_panics_is_unavailable_and_the_domain_thread_keeps_going() {
 
 #[test]
 fn a_command_whose_view_panics_still_commits_and_the_view_reports_it_is_behind() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let receipt = block_on(client.send(&c("a"), Add { n: -13 })).expect("committed");
     assert_eq!(receipt.reply, -13);
-    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.view::<Total>().get(&c("a")).try_get()));
-    assert!(read.is_err(), "reading a view that can't apply its events fails loudly");
+    let read = block_on(client.view::<Total>().get(&c("a")));
+    let Err(ReadError::Unavailable(reason)) = read else { panic!("{read:?}") };
+    assert!(reason.contains("panicked"), "reading a view that can't apply its events fails loudly: {reason}");
 }
 
 #[test]
 fn reads_see_a_receipt_once_the_view_applied_it() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let receipt = block_on(client.send(&c("a"), Add { n: 3 })).unwrap();
     let totals = client.view::<Total>();
     assert_eq!(block_on(totals.get_at_least(&c("a"), &receipt)), Ok(Some(3)));
@@ -187,31 +198,33 @@ fn reads_see_a_receipt_once_the_view_applied_it() {
 
 #[test]
 fn a_live_view_starts_at_the_state_now_and_follows_changes() {
-    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
-    client.send(&c("a"), Add { n: 2 });
+    let client = Client::<CountingApi>::in_process(runtime());
+    block_on(client.send(&c("a"), Add { n: 2 })).unwrap();
     let live = client.view::<Total>().live(&c("a"));
-    assert_eq!(*live.latest().0, Ok(Some(2)));
-    assert_eq!(live.latest().1, 0);
+    // It starts empty, and shows the state now once the domain thread has read it.
+    settled(&client);
+    assert_eq!(live.latest(), (Arc::new(Ok(Some(2))), 1));
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
     let listener = live.on_change(move |total, version| log.lock().unwrap().push(((**total).clone(), version)));
-    client.send(&c("a"), Add { n: 3 });
-    client.send(&c("b"), Add { n: 100 }); // another key
-    client.send(&c("a"), Add { n: 0 }); // no change
-    client.send(&c("a"), Add { n: 1 });
-    assert_eq!(*seen.lock().unwrap(), [(Ok(Some(5)), 1), (Ok(Some(6)), 2)]);
+    for (id, n) in [("a", 3), ("b", 100), ("a", 0), ("a", 1)] {
+        // Another key, then no change, then a change.
+        block_on(client.send(&c(id), Add { n })).unwrap();
+    }
+    assert_eq!(*seen.lock().unwrap(), [(Ok(Some(5)), 2), (Ok(Some(6)), 3)]);
 
     drop(listener);
-    client.send(&c("a"), Add { n: 1 });
+    block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
     assert_eq!(seen.lock().unwrap().len(), 2, "no callbacks after the listener drops");
-    assert_eq!(live.latest(), (Arc::new(Ok(Some(7))), 3));
+    assert_eq!(live.latest(), (Arc::new(Ok(Some(7))), 4));
 }
 
 #[test]
 fn a_live_view_can_be_awaited_from_another_thread() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let live = client.view::<Total>().live(&c("a"));
+    settled(&client);
     let (_, seen) = live.latest();
     let waiting = {
         let live = live.clone();
@@ -220,42 +233,49 @@ fn a_live_view_can_be_awaited_from_another_thread() {
     std::thread::sleep(Duration::from_millis(20));
     client.send(&c("a"), Add { n: 9 });
     let (total, version) = waiting.join().unwrap();
-    assert_eq!(((*total).clone(), version), (Ok(Some(9)), 1));
+    assert_eq!(((*total).clone(), version), (Ok(Some(9)), 2));
 }
 
 #[test]
 fn a_panicking_callback_doesnt_stop_the_domain_thread() {
-    let client = Client::<CountingApi>::in_process(Runtime::spawn(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     client.send_then(&c("a"), Add { n: 1 }, |_| panic!("the UI's callback fails"));
     assert_eq!(block_on(client.send(&c("a"), Add { n: 1 })).unwrap().reply, 2);
 }
 
 #[test]
 fn callbacks_may_read_and_send_without_deadlocking() {
-    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let live = client.view::<Total>().live(&c("a"));
     let reads = Arc::new(Mutex::new(Vec::new()));
     let (inner, me, log) = (client.clone(), live.clone(), reads.clone());
     let _listener = live.on_change(move |total, _| {
         // Read the view, and this live view itself, then send to it again until it reaches 3.
-        let read = inner.view::<Total>().get(&c("a")).try_get().unwrap().unwrap();
+        // Callbacks run on the domain thread, so the read resolves once this one returns.
+        let read = inner.view::<Total>().get(&c("a"));
         let latest = me.latest().0.as_ref().clone().unwrap();
         let total = total.as_ref().clone().unwrap();
         log.lock().unwrap().push((total, read, latest));
-        if total.unwrap() < 3 {
+        if total.unwrap_or(0) < 3 {
             inner.send(&c("a"), Add { n: 1 });
         }
     });
-    client.send(&c("a"), Add { n: 1 });
-    assert_eq!(*live.latest().0, Ok(Some(3)));
-    let reads = reads.lock().unwrap();
-    assert_eq!(reads.last(), Some(&(Some(3), Some(3), Some(3))));
-    assert!(reads.iter().all(|(seen, read, latest)| seen <= read && seen <= latest), "{reads:?}");
+    block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
+    let mut version = live.latest().1;
+    while *live.latest().0 != Ok(Some(3)) {
+        version = block_on(live.changed(version)).1;
+    }
+    let reads = std::mem::take(&mut *reads.lock().unwrap());
+    assert_eq!(reads.last().map(|(seen, _, latest)| (*seen, *latest)), Some((Some(3), Some(3))));
+    for (seen, read, latest) in reads {
+        let read = block_on(read).unwrap();
+        assert!(seen <= read && seen <= latest, "{seen:?} {read:?} {latest:?}");
+    }
 }
 
 #[test]
 fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
-    let runtime = Runtime::inline(memory());
+    let runtime = runtime();
     let client = Client::<CountingApi>::in_process(runtime.clone());
     let live = client.view::<Total>().live(&c("a"));
     let versions = Arc::new(Mutex::new(Vec::new()));
@@ -274,6 +294,7 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
         .collect();
     writers.into_iter().for_each(|w| w.join().unwrap());
 
+    settled(&client);
     assert_eq!(*live.latest().0, Ok(Some(800)));
     let versions = versions.lock().unwrap();
     assert!(versions.windows(2).all(|w| w[0] < w[1]), "versions only go up");
@@ -281,13 +302,13 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
 
 #[test]
 fn dropping_a_live_view_stops_its_updates() {
-    let client = Client::<CountingApi>::in_process(Runtime::inline(memory()));
+    let client = Client::<CountingApi>::in_process(runtime());
     let live = client.view::<Total>().live(&c("a"));
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
     let listener = live.on_change(move |_, _| flag.store(true, Ordering::SeqCst));
     drop(live);
-    client.send(&c("a"), Add { n: 1 });
+    block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
     assert!(!called.load(Ordering::SeqCst), "the live view was dropped, so nothing feeds it");
     drop(listener);
 }
@@ -340,7 +361,7 @@ impl domain_memory::React for PingBack {
 
 #[test]
 fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
-    let runtime = Runtime::spawn(Memory::new().with::<Counting>().policy(PingBack));
+    let runtime = Runtime::spawn(|| Memory::new().with::<Counting>().policy(PingBack));
     let client = Client::<CountingApi>::in_process(runtime.clone());
     client.send(&c("a"), Add { n: 1 });
 
@@ -350,18 +371,6 @@ fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(pings(), 2, "the policy's ping, then the scheduled one");
-}
-
-#[test]
-fn an_inline_client_runs_policies_when_woken() {
-    let runtime = Runtime::inline(Memory::new().with::<Counting>().policy(PingBack));
-    let client = Client::<CountingApi>::in_process(runtime.clone());
-    client.send(&c("a"), Add { n: 1 }).try_get().unwrap().unwrap();
-    assert_eq!(
-        runtime.call(|m| m.events(&OtherId::new("a")).len()).unwrap(),
-        1,
-        "the policy ran; the schedule isn't due"
-    );
 }
 
 // An adapter that answers from another thread, as an HTTP client would.
@@ -422,7 +431,7 @@ impl domain_memory::React for CheckThenPing {
 
 #[test]
 fn a_call_answered_on_another_thread_wakes_the_domain_thread() {
-    let runtime = Runtime::spawn(Memory::new().with::<Counting>().policy(CheckThenPing).external(Slow, SlowAdapter));
+    let runtime = Runtime::spawn(|| Memory::new().with::<Counting>().policy(CheckThenPing).external(Slow, SlowAdapter));
     let client = Client::<CountingApi>::in_process(runtime.clone());
     client.send(&c("a"), Add { n: 1 });
 

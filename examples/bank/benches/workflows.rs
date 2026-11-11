@@ -8,14 +8,14 @@ use common::*;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use domain_memory::{Memory, SagaStatus};
 use std::hint::black_box;
-use std::sync::Arc;
+use std::rc::Rc;
 
 /// Commands per fresh bank: each transfer adds a saga run and five events.
 const WORKFLOW_CHUNK: u64 = 1_000;
 
 /// The whole bank, with two accounts holding plenty: its views, both policies and the saga.
-fn bank() -> Arc<Memory> {
-    let bank = Arc::new(app_bank());
+fn bank() -> Rc<Memory> {
+    let bank = Rc::new(app_bank());
     open(&bank, 2, 1_000_000_000);
     bank
 }

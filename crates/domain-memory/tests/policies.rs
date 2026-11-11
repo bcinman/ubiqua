@@ -3,6 +3,7 @@ use domain::{
     StreamId, Timestamp,
 };
 use domain_memory::{Memory, PolicyCx, PolicyError, React, ScheduleError, UnscheduleError};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -123,7 +124,7 @@ fn version(memory: &Memory, stream: &str) -> u64 {
 #[test]
 fn a_failed_policy_runs_again_later_and_its_commands_take_effect_once() {
     let (memory, clock) = clocked();
-    let memory = Arc::new(memory.with::<Counting>().policy(Echo { failures: AtomicU32::new(2) }));
+    let memory = Rc::new(memory.with::<Counting>().policy(Echo { failures: AtomicU32::new(2) }));
     memory.send(&c("a"), Bump).unwrap();
 
     assert_eq!(memory.run_due(), Some(Timestamp::from_millis(2_000)), "retries after a second");
@@ -142,7 +143,7 @@ fn a_failed_policy_runs_again_later_and_its_commands_take_effect_once() {
 fn a_policy_acts_on_events_after_it_was_added_only() {
     let memory = Memory::new().with::<Counting>();
     memory.send(&c("a"), Bump).unwrap();
-    let memory = Arc::new(memory.policy(Echo { failures: AtomicU32::new(0) }));
+    let memory = Rc::new(memory.policy(Echo { failures: AtomicU32::new(0) }));
     memory.send(&c("b"), Bump).unwrap();
     memory.run_due();
     assert_eq!((version(&memory, "Counter/a-echo"), version(&memory, "Counter/b-echo")), (0, 1));
@@ -150,12 +151,12 @@ fn a_policy_acts_on_events_after_it_was_added_only() {
 
 #[test]
 fn an_adapter_answers_calls_and_without_one_the_policy_fails() {
-    let memory = Arc::new(Memory::new().with::<Counting>().policy(AskFirst).external(Lookup, Always));
+    let memory = Rc::new(Memory::new().with::<Counting>().policy(AskFirst).external(Lookup, Always));
     memory.send(&c("a"), Bump).unwrap();
     memory.run_due();
     assert_eq!(version(&memory, "Counter/a-echo"), 1);
 
-    let memory = Arc::new(Memory::new().with::<Counting>().policy(AskFirst));
+    let memory = Rc::new(Memory::new().with::<Counting>().policy(AskFirst));
     memory.send(&c("a"), Bump).unwrap();
     memory.run_due();
     let failures = memory.failures();
@@ -165,7 +166,7 @@ fn an_adapter_answers_calls_and_without_one_the_policy_fails() {
 #[test]
 fn a_scheduled_command_runs_once_at_its_time_unless_cancelled() {
     let (memory, clock) = clocked();
-    let memory = Arc::new(memory.with::<Counting>());
+    let memory = Rc::new(memory.with::<Counting>());
     let at = |ms| Timestamp::from_millis(ms);
 
     memory.schedule(&c("a"), Ping, at(5_000), "ping-1").unwrap();
@@ -248,7 +249,7 @@ impl React for Countersign {
 
 #[test]
 fn a_command_carries_who_sent_it() {
-    let memory = Arc::new(Memory::new().policy(Countersign));
+    let memory = Rc::new(Memory::new().policy(Countersign));
     memory.acting_as(Name("sam")).send(&SheetId::new("s-1"), Sign).unwrap();
     memory.send(&SheetId::new("s-2"), Sign).unwrap();
     memory.run_due();
@@ -270,7 +271,7 @@ fn a_command_carries_who_sent_it() {
 
 #[test]
 fn a_model_hosts_the_policies_it_lists() {
-    let memory = Arc::new(Memory::new().with::<Echoing>());
+    let memory = Rc::new(Memory::new().with::<Echoing>());
     memory.send(&CounterId::new("c"), Bump).unwrap();
     memory.run_due();
     assert_eq!(memory.events(&CounterId::new("c-echo")).len(), 1);

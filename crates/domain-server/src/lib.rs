@@ -3,7 +3,7 @@
 //! once: each sees the others' changes as they commit.
 //!
 //! ```text
-//! let bank = Runtime::spawn(Memory::new().with::<Bank>());
+//! let bank = Runtime::spawn(|| Memory::new().with::<Bank>());
 //! let server = Server::<BankApi>::new(bank).sessions(|token| users.check(token)).listen("0.0.0.0:7878")?;
 //! server.wait();
 //! ```
@@ -46,8 +46,8 @@ pub struct Server<A: Api> {
 }
 
 impl<A: Api> Server<A> {
-    /// Serves the commands and views `A` lists, on the model `runtime` runs. Commands from every
-    /// connection queue for its thread; reads run on each connection's own.
+    /// Serves the commands and views `A` lists, on the model `runtime` runs. Commands and reads
+    /// from every connection queue for its thread.
     ///
     /// # Panics
     /// When the model doesn't host one of the Api's views.
@@ -192,18 +192,28 @@ struct Registrar<'a> {
 type CommandFn = fn(&Memory, Option<&CurrentActor>, Value, String, Value) -> Body;
 
 struct ViewRoute {
-    get: fn(&Runtime, Option<&CurrentActor>, Value, Option<At>) -> Body,
-    snapshot: fn(&Runtime, Option<&CurrentActor>, Value) -> Body,
-    list: fn(&Runtime, Option<&CurrentActor>, Value, u64, usize) -> Body,
+    get: fn(&Memory, Option<&CurrentActor>, Value, Option<At>) -> Body,
+    snapshot: fn(&Memory, Option<&CurrentActor>, Value) -> Body,
+    list: fn(&Memory, Option<&CurrentActor>, Value, u64, usize) -> Body,
     /// Starts a watch or feed. The returned handle keeps it running.
     watch: WatchFn,
     events: EventsFn,
 }
 
-type WatchFn = fn(&Runtime, Option<CurrentActor>, Value, Outbox) -> Result<Handle, Body>;
-type EventsFn = fn(&Runtime, Option<CurrentActor>, Value, u64, Outbox) -> Result<Handle, Body>;
+type WatchFn = fn(&Memory, Option<CurrentActor>, Value, Outbox) -> Result<Handle, Body>;
+type EventsFn = fn(&Memory, Option<CurrentActor>, Value, u64, Outbox) -> Result<Handle, Body>;
 
 type Handle = Box<dyn Any + Send>;
+
+/// What a request asks of the runtime's thread.
+enum Job {
+    /// Answers with what it returns. The `&str` names it in the answer when it doesn't run.
+    Answer(&'static str, Box<dyn FnOnce(&Memory) -> Body + Send>),
+    /// Starts a watch, feed or trace, which runs until the request is stopped.
+    Start(StartFn),
+}
+
+type StartFn = Box<dyn FnOnce(&Memory) -> Result<Handle, Body> + Send>;
 
 impl ApiRegistry for Registrar<'_> {
     fn command<C: Command>(&mut self)
@@ -215,7 +225,9 @@ impl ApiRegistry for Registrar<'_> {
 
     fn view<V: Apply + Validate>(&mut self) {
         // Fails now, with the view's name, rather than on the first read.
-        let _ = self.runtime.view::<V>();
+        if let Err(reason) = self.runtime.call(|memory| drop(memory.view::<V>())) {
+            panic!("{reason}");
+        }
         let route = ViewRoute {
             get: get::<V>,
             snapshot: snapshot::<V>,
@@ -262,10 +274,10 @@ fn validate<V: Validate>(actor: Option<&CurrentActor>, key: &V::Key, state: Opti
     V::validate(&ReadCx::new(actor), key, state).map_err(|r| encode(&r).map_or_else(unavailable, Body::Refused))
 }
 
-fn get<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>, key: Value, at_least: Option<At>) -> Body {
+fn get<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: Value, at_least: Option<At>) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let reader = runtime.view::<V>();
+        let reader = memory.view::<V>();
         let state = match at_least {
             Some(At { stream, version }) => {
                 reader.get_at_least(&key, Position { stream: StreamId::from(stream), version }).map_err(|e| {
@@ -285,10 +297,10 @@ fn get<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>, key
     read().unwrap_or_else(|body| body)
 }
 
-fn snapshot<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>, key: Value) -> Body {
+fn snapshot<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: Value) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let snapshot = runtime.view::<V>().snapshot(&key);
+        let snapshot = memory.view::<V>().snapshot(&key);
         validate::<V>(actor, &key, snapshot.state.as_ref())?;
         Ok(wire::encode_snapshot(&snapshot).map_or_else(unavailable, Body::Ok))
     };
@@ -296,7 +308,7 @@ fn snapshot<V: Apply + Validate>(runtime: &Runtime, actor: Option<&CurrentActor>
 }
 
 fn list<V: Apply + Validate>(
-    runtime: &Runtime,
+    memory: &Memory,
     actor: Option<&CurrentActor>,
     key: Value,
     after: u64,
@@ -304,7 +316,7 @@ fn list<V: Apply + Validate>(
 ) -> Body {
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-        let reader = runtime.view::<V>();
+        let reader = memory.view::<V>();
         validate::<V>(actor, &key, reader.get(&key).as_ref())?;
         let entries: Result<Vec<_>, _> =
             reader.list(&key, Cursor::new(after), take.min(MAX_LIST)).iter().map(wire::encode_entry).collect();
@@ -317,37 +329,35 @@ fn list<V: Apply + Validate>(
 struct Relay<V: View, S> {
     subscription: S,
     /// Held while pumping, so changes go out in the order they were applied.
-    order: Mutex<()>,
-    key: V::Key,
+    key: Mutex<V::Key>,
     actor: Option<CurrentActor>,
     out: Outbox,
     ended: AtomicBool,
 }
 
 fn watch<V: Apply + Validate>(
-    runtime: &Runtime,
+    memory: &Memory,
     actor: Option<CurrentActor>,
     key: Value,
     out: Outbox,
 ) -> Result<Handle, Body> {
     let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-    let watch = runtime.view::<V>().watch(&key);
+    let watch = memory.view::<V>().watch(&key);
     let relay = Arc::new(Relay::<V, Watch<V>> {
         subscription: watch,
-        order: Mutex::new(()),
-        key,
+        key: Mutex::new(key),
         actor,
         out,
         ended: AtomicBool::new(false),
     });
     start(&relay, |relay| {
-        let _order = lock(&relay.order);
+        let key = lock(&relay.key);
         // Only the latest state matters.
         let Some(latest) = relay.subscription.drain().pop() else { return };
         if relay.ended.load(Ordering::SeqCst) {
             return;
         }
-        let body = match validate::<V>(relay.actor.as_ref(), &relay.key, latest.state.as_ref()) {
+        let body = match validate::<V>(relay.actor.as_ref(), &key, latest.state.as_ref()) {
             Ok(()) => encode(&latest.state).map_or_else(unavailable, Body::State),
             Err(refused) => {
                 relay.ended.store(true, Ordering::SeqCst);
@@ -360,32 +370,31 @@ fn watch<V: Apply + Validate>(
 }
 
 fn events<V: Apply + Validate>(
-    runtime: &Runtime,
+    memory: &Memory,
     actor: Option<CurrentActor>,
     key: Value,
     after: u64,
     out: Outbox,
 ) -> Result<Handle, Body> {
     let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
-    let reader = runtime.view::<V>();
+    let reader = memory.view::<V>();
     validate::<V>(actor.as_ref(), &key, reader.get(&key).as_ref())?;
     let feed = reader.events(&key, Cursor::new(after));
     let relay = Arc::new(Relay::<V, Feed<V>> {
         subscription: feed,
-        order: Mutex::new(()),
-        key,
+        key: Mutex::new(key),
         actor,
         out,
         ended: AtomicBool::new(false),
     });
     start(&relay, |relay| {
-        let _order = lock(&relay.order);
+        let key = lock(&relay.key);
         for frame in relay.subscription.drain() {
             if relay.ended.load(Ordering::SeqCst) {
                 return;
             }
             let body = match frame {
-                Frame::Entry(entry) => match validate::<V>(relay.actor.as_ref(), &relay.key, Some(&entry.state)) {
+                Frame::Entry(entry) => match validate::<V>(relay.actor.as_ref(), &key, Some(&entry.state)) {
                     Ok(()) => wire::encode_entry(&entry).map_or_else(unavailable, Body::Entry),
                     Err(refused) => {
                         relay.ended.store(true, Ordering::SeqCst);
@@ -547,79 +556,102 @@ impl Connection {
             }
         };
         let outbox = Outbox { id: request.id, out: out.clone() };
-        let runtime = &self.runtime;
         let route = |view: &str| self.routes.views.get(view).ok_or_else(|| unknown("view", view));
-        let answer = match request.op {
+        let actor = actor.cloned();
+        let out = outbox.clone();
+        // Everything that reads or changes the model runs on the runtime's thread.
+        let job = match request.op {
             Op::Send { command, target, command_id, input } => match self.routes.commands.get(command.as_str()) {
-                Some(&run) => {
-                    // Answered from the runtime's thread, once the command is stored.
-                    let (actor, outbox) = (actor.cloned(), outbox.clone());
-                    runtime.exec(
-                        move |memory: &Memory| run(memory, actor.as_ref(), target, command_id, input),
-                        move |body| {
-                            outbox.send(body.unwrap_or_else(|reason| unavailable(format!("the command {reason}"))))
-                        },
-                    );
-                    return;
-                }
-                None => unknown("command", &command),
+                Some(&run) => Job::Answer(
+                    "command",
+                    Box::new(move |memory| run(memory, actor.as_ref(), target, command_id, input)),
+                ),
+                None => return outbox.send(unknown("command", &command)),
             },
-            Op::Get { view, key, at_least } => {
-                route(&view).map_or_else(|e| e, |r| (r.get)(runtime, actor, key, at_least))
-            }
-            Op::Snapshot { view, key } => route(&view).map_or_else(|e| e, |r| (r.snapshot)(runtime, actor, key)),
-            Op::List { view, key, after, take } => {
-                route(&view).map_or_else(|e| e, |r| (r.list)(runtime, actor, key, after, take))
-            }
-            Op::Watch { view, key } => {
-                match route(&view).and_then(|r| (r.watch)(runtime, actor.cloned(), key, outbox.clone())) {
-                    Ok(handle) => {
-                        live.insert(request.id, handle);
-                        return;
-                    }
-                    Err(body) => body,
-                }
-            }
-            Op::Events { view, key, after } => {
-                match route(&view).and_then(|r| (r.events)(runtime, actor.cloned(), key, after, outbox.clone())) {
-                    Ok(handle) => {
-                        live.insert(request.id, handle);
-                        return;
-                    }
-                    Err(body) => body,
-                }
-            }
             Op::Stop => {
                 live.remove(&request.id);
                 return;
             }
-            Op::Catalog | Op::Status | Op::Aggregate { .. } | Op::ViewKeys { .. } | Op::Trace { .. }
-                if !self.observers.as_ref().is_some_and(|allow| allow(actor)) =>
-            {
-                Body::Err(Failure::Invalid("this connection may not read telemetry".into()))
-            }
-            Op::Catalog => encode(&runtime.telemetry().catalog()).map_or_else(unavailable, Body::Ok),
-            Op::Status => match runtime.telemetry().status() {
-                Ok(status) => encode(&status).map_or_else(unavailable, Body::Ok),
-                Err(e) => unavailable(e),
-            },
-            Op::Aggregate { stream, at } => match runtime.telemetry().aggregate(&stream, at) {
-                Ok(aggregate) => encode(&aggregate).map_or_else(unavailable, Body::Ok),
-                Err(e) => unavailable(e),
-            },
-            Op::ViewKeys { view } => match runtime.telemetry().view(&view) {
-                Some(keys) => encode(&keys).map_or_else(unavailable, Body::Ok),
-                None => Body::Err(Failure::Invalid(format!("no view {view} is hosted here"))),
-            },
-            Op::Trace { since } => match runtime.telemetry().trace(since) {
-                Ok(feed) => {
-                    live.insert(request.id, trace(feed, outbox));
-                    return;
+            Op::Get { view, key, at_least } => match route(&view) {
+                Ok(&ViewRoute { get, .. }) => {
+                    Job::Answer("read", Box::new(move |memory| get(memory, actor.as_ref(), key, at_least)))
                 }
-                Err(e) => unavailable(e),
+                Err(body) => return outbox.send(body),
             },
+            Op::Snapshot { view, key } => match route(&view) {
+                Ok(&ViewRoute { snapshot, .. }) => {
+                    Job::Answer("read", Box::new(move |memory| snapshot(memory, actor.as_ref(), key)))
+                }
+                Err(body) => return outbox.send(body),
+            },
+            Op::List { view, key, after, take } => match route(&view) {
+                Ok(&ViewRoute { list, .. }) => {
+                    Job::Answer("read", Box::new(move |memory| list(memory, actor.as_ref(), key, after, take)))
+                }
+                Err(body) => return outbox.send(body),
+            },
+            Op::Watch { view, key } => match route(&view) {
+                Ok(&ViewRoute { watch, .. }) => Job::Start(Box::new(move |memory| watch(memory, actor, key, out))),
+                Err(body) => return outbox.send(body),
+            },
+            Op::Events { view, key, after } => match route(&view) {
+                Ok(&ViewRoute { events, .. }) => {
+                    Job::Start(Box::new(move |memory| events(memory, actor, key, after, out)))
+                }
+                Err(body) => return outbox.send(body),
+            },
+            Op::Catalog | Op::Status | Op::Aggregate { .. } | Op::ViewKeys { .. } | Op::Trace { .. }
+                if !self.observers.as_ref().is_some_and(|allow| allow(actor.as_ref())) =>
+            {
+                return outbox.send(Body::Err(Failure::Invalid("this connection may not read telemetry".into())));
+            }
+            Op::Catalog => Job::Answer(
+                "read",
+                Box::new(|memory| encode(&memory.telemetry().catalog()).map_or_else(unavailable, Body::Ok)),
+            ),
+            Op::Status => Job::Answer(
+                "read",
+                Box::new(|memory| match memory.telemetry().status() {
+                    Ok(status) => encode(&status).map_or_else(unavailable, Body::Ok),
+                    Err(e) => unavailable(e),
+                }),
+            ),
+            Op::Aggregate { stream, at } => Job::Answer(
+                "read",
+                Box::new(move |memory| match memory.telemetry().aggregate(&stream, at) {
+                    Ok(aggregate) => encode(&aggregate).map_or_else(unavailable, Body::Ok),
+                    Err(e) => unavailable(e),
+                }),
+            ),
+            Op::ViewKeys { view } => Job::Answer(
+                "read",
+                Box::new(move |memory| match memory.telemetry().view(&view) {
+                    Some(keys) => encode(&keys).map_or_else(unavailable, Body::Ok),
+                    None => Body::Err(Failure::Invalid(format!("no view {view} is hosted here"))),
+                }),
+            ),
+            Op::Trace { since } => Job::Start(Box::new(move |memory| {
+                Ok(trace(memory.telemetry().trace(since).map_err(unavailable)?, out))
+            })),
         };
-        outbox.send(answer);
+        match job {
+            Job::Answer(what, job) => self.runtime.exec(job, move |body| {
+                outbox.send(body.unwrap_or_else(|reason| unavailable(format!("the {what} {reason}"))))
+            }),
+            Job::Start(start) => {
+                // Holds the handle once the runtime's thread has made it; dropping it stops it.
+                let slot: Arc<Mutex<Option<Handle>>> = Arc::default();
+                live.insert(request.id, Box::new(slot.clone()));
+                self.runtime.exec(
+                    move |memory| start(memory).map(|handle| *lock(&slot) = Some(handle)),
+                    move |started| match started {
+                        Ok(Ok(())) => {}
+                        Ok(Err(body)) => outbox.send(body),
+                        Err(reason) => outbox.send(unavailable(format!("the read {reason}"))),
+                    },
+                );
+            }
+        }
     }
 }
 

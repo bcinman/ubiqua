@@ -5,10 +5,17 @@
 //! `domain-sqlite` syncs to disk once per batch rather than once per command. Each job's answer
 //! goes out once its batch is durable.
 //!
-//! Reads don't queue: view readers and telemetry read the views directly, from any thread.
+//! Reads queue too: a view, a subscription or telemetry is read in a job, so nothing the thread
+//! owns is ever shared or locked. What a job returns, such as a value or a live feed, crosses
+//! back.
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::CommandIds;
 use crate::{Memory, reason};
-use domain::{Apply, CommandId, MaybeSend, Timestamp};
+use domain::{CommandId, MaybeSend};
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 /// The most jobs one batch runs.
@@ -19,52 +26,59 @@ const MAX_BATCH: usize = 256;
 /// once the batch it ran in is durable, or isn't.
 #[cfg(not(target_arch = "wasm32"))]
 type Job = Box<dyn FnOnce(Option<&Memory>) -> Answer + Send>;
-#[cfg(target_arch = "wasm32")]
-type Job = Box<dyn FnOnce(Option<&Memory>) -> Answer>;
-
 #[cfg(not(target_arch = "wasm32"))]
 type Answer = Box<dyn FnOnce(Result<(), String>) + Send>;
-#[cfg(target_arch = "wasm32")]
-type Answer = Box<dyn FnOnce(Result<(), String>)>;
 
-/// A [`Memory`] and the thread that changes it. Clone it to share; the thread stops once every
-/// clone is dropped.
+/// The thread that owns a [`Memory`] and changes it, and how to hand it jobs. Clone it to share;
+/// the thread stops once every clone is dropped.
 #[derive(Clone)]
 pub struct Runtime {
-    inner: Arc<Inner>,
+    #[cfg(not(target_arch = "wasm32"))]
+    jobs: Arc<Jobs>,
+    #[cfg(not(target_arch = "wasm32"))]
+    ids: Arc<CommandIds>,
+    /// On the web, which has no threads, jobs run at once on the page's thread.
+    #[cfg(target_arch = "wasm32")]
+    memory: Rc<Memory>,
 }
 
-struct Inner {
-    memory: Arc<Memory>,
-    /// Jobs for the runtime's thread; `None` runs them on the caller's thread.
-    #[cfg(not(target_arch = "wasm32"))]
-    jobs: Option<std::sync::mpsc::Sender<Job>>,
-}
+#[cfg(not(target_arch = "wasm32"))]
+struct Jobs(std::sync::mpsc::Sender<Job>);
 
 impl Runtime {
-    /// Moves `memory` onto a thread of its own, which runs jobs as they come, and the model's
-    /// policies and scheduled commands between them. On wasm, which has no threads, this is
-    /// [`inline`](Self::inline).
+    /// Starts a thread that builds a [`Memory`] with `build`, then owns it: it runs jobs as they
+    /// come, and the model's policies and scheduled commands between them. The memory never
+    /// leaves the thread, so nothing in it is locked.
+    ///
+    /// On the web there are no threads: jobs run at once, on the thread that hands them in, and
+    /// so do policies. Scheduled commands fire when a job calls `Memory::run_due`; call one from
+    /// a timer.
+    ///
+    /// # Panics
+    /// When `build` panics, such as when the store it opens fails.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn spawn(memory: Memory) -> Self {
+    pub fn spawn(build: impl FnOnce() -> Memory + Send + 'static) -> Self {
         use std::sync::mpsc::RecvTimeoutError;
-        let (jobs, queue) = std::sync::mpsc::channel::<Job>();
-        let memory = Arc::new(memory);
-        let inner = Arc::new(Inner { memory: memory.clone(), jobs: Some(jobs) });
+        let (sender, queue) = std::sync::mpsc::channel::<Job>();
+        let jobs = Arc::new(Jobs(sender));
         // An empty job wakes the thread when policies have work. Weak, so the thread still stops
         // once every handle is gone.
-        let wake = Arc::downgrade(&inner);
-        memory.on_wake(move || {
-            if let Some(inner) = wake.upgrade() {
-                inner.post(Box::new(|_| Box::new(|_| {})));
-            }
-        });
-        std::thread::Builder::new()
+        let wake = Arc::downgrade(&jobs);
+        let (ready, started) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
             .name("domain".into())
             .spawn(move || {
+                let memory = std::rc::Rc::new(build());
+                memory.on_wake(move || {
+                    if let Some(jobs) = wake.upgrade() {
+                        jobs.post(Box::new(|_| Box::new(|_| {})));
+                    }
+                });
+                let _ = ready.send(memory.command_ids());
                 // Why a batch didn't commit, once one hasn't.
                 let mut failed = None;
-                let mut due = None;
+                // Run what's due right away: schedules and policy work the store held.
+                let mut due = Some(memory.now());
                 loop {
                     let first = match due {
                         Some(at) => queue.recv_timeout(memory.now().until(at)),
@@ -90,30 +104,22 @@ impl Runtime {
                 }
             })
             .expect("spawn the domain thread");
-        Self { inner }
+        match started.recv() {
+            Ok(ids) => Self { jobs, ids },
+            Err(_) => std::panic::resume_unwind(thread.join().expect_err("the thread stopped before it started")),
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn spawn(memory: Memory) -> Self {
-        Self::inline(memory)
-    }
-
-    /// Runs each job on the thread that hands it in, at once: for tests, and on the web. Policies
-    /// run on whichever thread wakes them. Scheduled commands fire when something calls
-    /// `Memory::run_due`; on the web, call it from a timer.
-    pub fn inline(memory: Memory) -> Self {
-        let memory = Arc::new(memory);
-        let weak = Arc::downgrade(&memory);
+    pub fn spawn(build: impl FnOnce() -> Memory + 'static) -> Self {
+        let memory = Rc::new(build());
+        let weak = Rc::downgrade(&memory);
         memory.on_wake(move || {
             if let Some(memory) = weak.upgrade() {
                 memory.run_due();
             }
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        let inner = Inner { memory, jobs: None };
-        #[cfg(target_arch = "wasm32")]
-        let inner = Inner { memory };
-        Self { inner: Arc::new(inner) }
+        Self { memory }
     }
 
     /// Runs `job` on the runtime's thread, then calls `then` with what it returned, once what it
@@ -124,17 +130,24 @@ impl Runtime {
         job: impl FnOnce(&Memory) -> T + MaybeSend + 'static,
         then: impl FnOnce(Result<T, String>) + MaybeSend + 'static,
     ) {
-        self.inner.post(Box::new(move |memory: Option<&Memory>| -> Answer {
-            let Some(memory) = memory else {
-                return Box::new(move |outcome: Result<(), String>| then(Err(outcome.err().unwrap_or_default())));
-            };
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(memory))) {
-                Ok(value) => Box::new(move |outcome: Result<(), String>| then(outcome.map(|()| value))),
-                Err(panic) => {
-                    let reason = reason(&*panic);
-                    Box::new(move |_| then(Err(reason)))
-                }
-            }
+        // `None` when the runtime refused the job.
+        let run = move |memory: Option<&Memory>| {
+            let memory = memory?;
+            let job = std::panic::AssertUnwindSafe(|| job(memory));
+            Some(std::panic::catch_unwind(job).map_err(|panic| reason(&*panic)))
+        };
+        #[cfg(target_arch = "wasm32")]
+        then(run(Some(&self.memory)).expect("a job given the memory runs"));
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jobs.post(Box::new(move |memory: Option<&Memory>| -> Answer {
+            let ran = run(memory);
+            Box::new(move |outcome: Result<(), String>| {
+                then(match ran {
+                    Some(Ok(value)) => outcome.map(|()| value),
+                    Some(Err(panic)) => Err(panic),
+                    None => Err(outcome.err().unwrap_or_default()),
+                })
+            })
         }));
     }
 
@@ -149,7 +162,7 @@ impl Runtime {
     ) -> Result<T, String> {
         #[cfg(not(target_arch = "wasm32"))]
         assert!(
-            self.inner.jobs.is_none() || std::thread::current().name() != Some("domain"),
+            std::thread::current().name() != Some("domain"),
             "`Runtime::call` on the runtime's own thread would wait forever; use `exec`"
         );
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
@@ -159,39 +172,22 @@ impl Runtime {
         answered.recv().unwrap_or_else(|_| Err("didn't run: the domain thread stopped".into()))
     }
 
-    /// Reads a view, on the caller's thread.
-    pub fn view<V: Apply>(&self) -> crate::ViewReader<V> {
-        self.inner.memory.view::<V>()
-    }
-
-    /// The model's telemetry, read on the caller's thread.
-    pub fn telemetry(&self) -> crate::Telemetry<'_> {
-        self.inner.memory.telemetry()
-    }
-
-    /// A command id no other command sent here has used.
+    /// A command id no other command sent here has used, made without a job.
     pub fn new_command_id(&self) -> CommandId {
-        self.inner.memory.new_command_id()
-    }
-
-    /// The time now, by the memory's clock.
-    pub fn now(&self) -> Timestamp {
-        self.inner.memory.now()
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.ids.next();
+        #[cfg(target_arch = "wasm32")]
+        self.memory.new_command_id()
     }
 }
 
-impl Inner {
+#[cfg(not(target_arch = "wasm32"))]
+impl Jobs {
     fn post(&self, job: Job) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(jobs) = &self.jobs {
-            // Only fails once the thread has stopped, after a panic outside any job.
-            if let Err(std::sync::mpsc::SendError(job)) = jobs.send(job) {
-                job(None)(Err("didn't run: the domain thread stopped".into()));
-            }
-            return;
+        // Only fails once the thread has stopped, after a panic outside any job.
+        if let Err(std::sync::mpsc::SendError(job)) = self.0.send(job) {
+            job(None)(Err("didn't run: the domain thread stopped".into()));
         }
-        let answer = job(Some(&self.memory));
-        answer(Ok(()));
     }
 }
 

@@ -1,8 +1,7 @@
 use domain::{Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, KeyOf, Model, Origin, View, ViewCx};
-use domain_memory::Memory;
+use domain_memory::{Memory, Runtime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 domain::id!(
@@ -262,26 +261,37 @@ fn a_live_feed_on_a_view_of_views_gets_each_change() {
 
 #[test]
 fn views_of_views_stay_exact_under_concurrent_commands() {
-    let memory = Arc::new(Memory::new().with::<Bank>());
-    for n in 0..4 {
-        memory.send(&a(&format!("a{n}")), Open { owner: format!("o{}", n % 2) }).unwrap();
-    }
+    let runtime = Runtime::spawn(|| Memory::new().with::<Bank>());
+    runtime
+        .call(|memory| {
+            for n in 0..4 {
+                memory.send(&a(&format!("a{n}")), Open { owner: format!("o{}", n % 2) }).unwrap();
+            }
+        })
+        .unwrap();
     let threads: Vec<_> = (0..8)
         .map(|t| {
-            let memory = memory.clone();
+            let runtime = runtime.clone();
             std::thread::spawn(move || {
                 for _ in 0..100 {
-                    memory.send(&a(&format!("a{}", t % 4)), Move { amount: 1 }).unwrap();
+                    runtime
+                        .call(move |m| m.send(&a(&format!("a{}", t % 4)), Move { amount: 1 }).map(drop))
+                        .unwrap()
+                        .unwrap();
                 }
             })
         })
         .collect();
     threads.into_iter().for_each(|t| t.join().unwrap());
 
-    assert_eq!(memory.view::<Leaderboard>().get(&everyone()), Some(totals(&[("o0", 400), ("o1", 400)])));
-    let summary = memory.view::<AccountSummary>().list(&a("a0"), Cursor::START, usize::MAX);
-    let balances: Vec<i64> = summary.iter().skip(1).map(|e| e.state.balance).collect();
-    assert_eq!(balances, (1..=200).collect::<Vec<_>>());
+    runtime
+        .call(|memory| {
+            assert_eq!(memory.view::<Leaderboard>().get(&everyone()), Some(totals(&[("o0", 400), ("o1", 400)])));
+            let summary = memory.view::<AccountSummary>().list(&a("a0"), Cursor::START, usize::MAX);
+            let balances: Vec<i64> = summary.iter().skip(1).map(|e| e.state.balance).collect();
+            assert_eq!(balances, (1..=200).collect::<Vec<_>>());
+        })
+        .unwrap();
 }
 
 // Two views that read each other.

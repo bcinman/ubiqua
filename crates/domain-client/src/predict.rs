@@ -50,7 +50,10 @@ impl Predictor {
         Some(Prediction { id, overlays: overlays.iter().map(Arc::downgrade).collect() })
     }
 
-    pub(crate) fn register<V: View>(&self, overlay: &Arc<Overlay<V>>) {
+    pub(crate) fn register<V: View>(&self, overlay: &Arc<Overlay<V>>)
+    where
+        Read<V>: MaybeSync,
+    {
         let weak: Weak<dyn Predicting> = Arc::downgrade(overlay) as Weak<Overlay<V>>;
         let mut overlays = lock(&self.overlays);
         for command in overlay.makers.keys() {
@@ -81,7 +84,6 @@ trait Predicting: MaybeSend + MaybeSync {
 
 /// One live view's state from the model, with the waiting commands on top.
 pub(crate) struct Overlay<V: View> {
-    key: V::Key,
     makers: HashMap<TypeId, Make<V>>,
     layers: Mutex<Layers<V>>,
     target: Arc<Shared<Read<V>>>,
@@ -95,6 +97,7 @@ pub(crate) struct Overlay<V: View> {
 }
 
 struct Layers<V: View> {
+    key: V::Key,
     /// The newest state from the model.
     latest: Read<V>,
     /// What the predictions sit on: `latest` as of the last answer.
@@ -108,9 +111,8 @@ impl<V: View> Overlay<V> {
         let mut makers = Makers::<V>(HashMap::new());
         V::predictions(&mut makers);
         Arc::new(Self {
-            key,
             makers: makers.0,
-            layers: Mutex::new(Layers { latest: initial.clone(), base: initial.clone(), waiting: Vec::new() }),
+            layers: Mutex::new(Layers { key, latest: initial.clone(), base: initial.clone(), waiting: Vec::new() }),
             target: Shared::new(initial),
             publishing: Mutex::new(()),
             requested: AtomicBool::new(false),
@@ -151,7 +153,7 @@ impl<V: View> Overlay<V> {
                 let layers = lock(&self.layers);
                 let mut shown = layers.base.clone();
                 if let Ok(state) = &mut shown {
-                    layers.waiting.iter().for_each(|(_, change)| change(&self.key, state));
+                    layers.waiting.iter().for_each(|(_, change)| change(&layers.key, state));
                 }
                 shown
             };
@@ -168,7 +170,10 @@ impl<V: View> Overlay<V> {
     }
 }
 
-impl<V: View> Predicting for Overlay<V> {
+impl<V: View> Predicting for Overlay<V>
+where
+    Read<V>: MaybeSync,
+{
     fn add(&self, id: u64, target: &dyn Any, command: &dyn Any) {
         let Some(make) = self.makers.get(&command.type_id()) else { return };
         lock(&self.layers).waiting.push((id, make(target, command)));

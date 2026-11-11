@@ -201,13 +201,13 @@ With [SQLite](storage.md), schedules survive a restart.
 | | Policies | Schedules |
 | --- | --- | --- |
 | `Runtime::spawn` | on the runtime's thread | on the runtime's thread, when due |
-| `Runtime::inline` | on the thread that sent the event | when you call `run_due` |
+| `Runtime::spawn` on the web | on the page's thread, as events arrive | when a job calls `run_due` |
 | `Memory` on its own | when you call `run_due` | when you call `run_due` |
 
 `run_due` does what's due and says when to call it again:
 
 ```rust
-let bank = Arc::new(bank);
+let bank = Rc::new(bank);
 let next = bank.run_due();                   // Option<Timestamp>
 ```
 

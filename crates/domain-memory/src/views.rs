@@ -53,6 +53,9 @@ pub(crate) struct Delivery {
     pub at: Timestamp,
     /// The source's [`SourcePayload`]: who recorded it, the event, and the state with it.
     pub payload: AnyBox,
+    /// Written as history, such as imports and a story's `given`: views apply it, policies don't
+    /// act on it.
+    pub history: bool,
 }
 
 impl Delivery {
@@ -63,7 +66,7 @@ impl Delivery {
         at: Timestamp,
         payload: T,
     ) -> Self {
-        Self { source, stream, seq, at, payload: Box::new(payload) }
+        Self { source, stream, seq, at, payload: Box::new(payload), history: false }
     }
 
     /// The order a view added later applies history in.
@@ -270,8 +273,8 @@ impl<V: Apply> ViewHost<V> {
                 let cursor = Cursor::new(k.entries.len() as u64 + 1);
                 if !downstream.is_empty() {
                     let payload: (V::Key, V::Event, V::State) = (key.clone(), event.clone(), (*state).clone());
-                    let next =
-                        Arc::new(Delivery::new(TypeId::of::<V>(), stream.clone(), cursor.seq(), delivery.at, payload));
+                    let next = Delivery::new(TypeId::of::<V>(), stream.clone(), cursor.seq(), delivery.at, payload);
+                    let next = Arc::new(Delivery { history: delivery.history, ..next });
                     downstream.iter().for_each(|consumer| consumer.push(next.clone()));
                 }
                 let entry = Entry {

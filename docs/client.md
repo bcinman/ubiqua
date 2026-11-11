@@ -52,6 +52,8 @@ error[E0277]: `BankApi` doesn't let clients read `AuditLog`
 | `Client::in_process(memory)` | a thread of their own, in order | apps: the UI thread never waits |
 | `Client::inline(memory)` | the caller's thread | tests, scripts, the web |
 
+[Policies](policies.md) and scheduled commands run on the domain thread too, between commands. With `inline`, call `Memory::run_due` for schedules.
+
 On the web there are no threads, so `in_process` behaves like `inline`.
 
 ## Send
@@ -151,4 +153,4 @@ let _listener = summary.on_change(move |latest, _| {
 
 Callbacks run on the domain thread, so they should only hand work to the UI thread. They may read views and send commands. No lock is held while they run.
 
-Next: [Stories](stories.md).
+Next: [Policies](policies.md).

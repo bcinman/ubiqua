@@ -7,7 +7,7 @@
 //! One process opens a file at a time. Values are stored as JSON, so the file is readable with
 //! any SQLite tool.
 
-use domain_memory::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, Store, StoreError, ViewRows};
+use domain_memory::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -51,6 +51,16 @@ const SCHEMA: &str = "
         seq INTEGER NOT NULL,
         at INTEGER NOT NULL,
         PRIMARY KEY (view, key, cursor)
+    );
+    CREATE TABLE IF NOT EXISTS schedules (
+        stream TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        PRIMARY KEY (stream, command_id)
     );
     CREATE TABLE IF NOT EXISTS view_progress (
         view TEXT NOT NULL,
@@ -249,6 +259,37 @@ impl Store for Sqlite {
                 params![view, version],
             )?;
             tx.commit()
+        })
+    }
+
+    fn save_schedule(&self, row: &ScheduleRow) -> Result<(), StoreError> {
+        self.run(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO schedules (stream, command_id, command, id, payload, at, state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![row.stream, row.command_id, row.command, row.id, row.payload, row.at, row.state],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn schedules(&self) -> Result<Vec<ScheduleRow>, StoreError> {
+        self.run(|c| {
+            let mut select =
+                c.prepare_cached("SELECT stream, command_id, command, id, payload, at, state FROM schedules")?;
+            select
+                .query_map([], |row| {
+                    Ok(ScheduleRow {
+                        stream: row.get(0)?,
+                        command_id: row.get(1)?,
+                        command: row.get(2)?,
+                        id: row.get(3)?,
+                        payload: row.get(4)?,
+                        at: row.get(5)?,
+                        state: row.get(6)?,
+                    })
+                })?
+                .collect()
         })
     }
 }

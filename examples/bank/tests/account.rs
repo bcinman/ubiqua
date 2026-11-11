@@ -79,3 +79,33 @@ fn an_owner_sees_every_account_they_hold() {
             Holdings { balances: [(a1(), 50), (savings.clone(), 200)].into_iter().collect() },
         );
 }
+
+#[test]
+fn a_risky_withdrawal_freezes_the_account_for_a_day() {
+    let day = FREEZE_FOR;
+    Story::new()
+        .policy(FraudReview)
+        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+        .when(&a1(), WithdrawMoney { amount: 900 })
+        .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
+        .call(ScoreWithdrawal { account: a1(), amount: 900 })
+        .succeed(Risk(95))
+        .then(&a1(), [AccountFrozen])
+        .when(&a1(), WithdrawMoney { amount: 10 })
+        .rejected(Frozen)
+        .advance(day)
+        .then(&a1(), [AccountThawed])
+        .when(&a1(), WithdrawMoney { amount: 10 })
+        .then(&a1(), [MoneyWithdrawn { amount: 10, balance_after: 90 }]);
+}
+
+#[test]
+fn small_withdrawals_are_not_scored() {
+    Story::new()
+        .policy(FraudReview)
+        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+        .when(&a1(), WithdrawMoney { amount: SCORED_FROM - 1 })
+        .then(&a1(), [MoneyWithdrawn { amount: SCORED_FROM - 1, balance_after: 1001 - SCORED_FROM }])
+        .advance(FREEZE_FOR)
+        .then_none(&a1());
+}

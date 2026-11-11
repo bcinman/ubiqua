@@ -30,6 +30,28 @@ pub trait Store: MaybeSend + MaybeSync {
     fn save_view(&self, view: &str, rows: &ViewRows) -> Result<(), StoreError>;
     /// Deletes what's stored for a view and records it at `version`.
     fn reset_view(&self, view: &str, version: u64) -> Result<(), StoreError>;
+
+    /// Adds or replaces a scheduled command, by its stream and command id.
+    fn save_schedule(&self, row: &ScheduleRow) -> Result<(), StoreError>;
+    /// Every scheduled command, including those that ran or were cancelled.
+    fn schedules(&self) -> Result<Vec<ScheduleRow>, StoreError>;
+}
+
+/// A command to send later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduleRow {
+    pub stream: String,
+    pub command_id: String,
+    /// The aggregate and command, such as `Transfer.ExpireTransfer`.
+    pub command: String,
+    /// The instance's id, as JSON.
+    pub id: String,
+    /// The command, as JSON.
+    pub payload: String,
+    /// When it's due, in milliseconds since the Unix epoch.
+    pub at: u64,
+    /// `pending`, `fired` or `cancelled`.
+    pub state: String,
 }
 
 /// What one command or import records.

@@ -1,10 +1,12 @@
 use domain::{
-    Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, Model, SendError, StreamId, ViewCx,
+    Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, Model, Policy, SendError, StreamId,
+    Timestamp, ViewCx,
 };
-use domain_memory::Memory;
+use domain_memory::{Memory, PolicyCx, PolicyError, React};
 use domain_sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // A wallet records credits. `Summary` sums them, `Overview` copies the summary's state, and
@@ -14,13 +16,13 @@ domain::id!(
     pub struct WalletId;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = WalletId, events(Credited), reply = u64)]
 pub struct Credit {
     amount: u64,
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = WalletId, events(Credited))]
 pub struct Note;
 
@@ -265,4 +267,73 @@ fn changing_a_views_version_rebuilds_it_and_the_views_that_read_it() {
     // Going back is a change too.
     let memory = db.open::<v0::Wallets>();
     assert_eq!(memory.view::<v0::Overview>().get(&w("a")), Some(13));
+}
+
+/// Credits `<id>-bonus` with 1 for every credit, except to bonus wallets.
+#[derive(Policy)]
+#[policy(from(Wallet(Credited)))]
+pub struct Bonus;
+
+impl React for Bonus {
+    async fn react(&self, cx: &PolicyCx<Self>, _: BonusInput) -> Result<(), PolicyError> {
+        let id = cx.source::<Wallet>().expect("from wallets");
+        if !id.as_str().ends_with("-bonus") {
+            cx.send(&w(&format!("{id}-bonus")), Credit { amount: 1 })?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_new_policy_ignores_the_past_and_a_stored_one_acts_on_what_it_missed() {
+    let db = TempDb::new("policies");
+    {
+        let memory = db.open::<WalletsOnly>();
+        memory.send(&w("a"), Credit { amount: 5 }).unwrap();
+        memory.send(&w("c"), Credit { amount: 5 }).unwrap(); // never credited again
+    }
+
+    let with_bonus = || Arc::new(db.open::<WalletsOnly>().policy(Bonus));
+    let memory = with_bonus();
+    memory.run_due();
+    assert_eq!(memory.state(&w("a-bonus")), 0, "new: the past isn't acted on");
+    memory.send(&w("a"), Credit { amount: 1 }).unwrap();
+    memory.run_due();
+    assert_eq!(memory.state(&w("a-bonus")), 1);
+    drop(memory);
+
+    // While the policy isn't running, b is credited.
+    db.open::<WalletsOnly>().send(&w("b"), Credit { amount: 2 }).unwrap();
+    let memory = with_bonus();
+    memory.run_due();
+    assert_eq!((memory.state(&w("a-bonus")), memory.state(&w("b-bonus"))), (1, 1), "it caught up, once");
+    assert_eq!(memory.state(&w("c-bonus")), 0, "and still not on the past");
+}
+
+#[test]
+fn a_schedule_fires_after_a_restart_once() {
+    let db = TempDb::new("schedules");
+    let open_at = |ms: u64| {
+        let memory = Memory::with_clock(move || Timestamp::from_millis(ms));
+        Arc::new(memory.persist_to(Sqlite::open(&db.0).unwrap()).with::<WalletsOnly>())
+    };
+    let memory = open_at(1_000);
+    memory.schedule(&w("a"), Note, Timestamp::from_millis(5_000), "note-1").unwrap();
+    memory.schedule(&w("a"), Note, Timestamp::from_millis(5_000), "note-2").unwrap();
+    memory.unschedule(&w("a"), "note-2").unwrap();
+    assert_eq!(memory.run_due(), Some(Timestamp::from_millis(5_000)));
+    drop(memory);
+
+    let memory = open_at(6_000);
+    assert_eq!(memory.run_due(), None);
+    assert!(memory.send_with_id(&w("a"), Note, "note-1").is_ok(), "note-1 ran");
+    assert!(matches!(
+        memory.send_with_id(&w("a"), Credit { amount: 1 }, "note-1"),
+        Err(SendError::CommandIdReused { .. })
+    ));
+    assert!(matches!(memory.unschedule(&w("a"), "note-2"), Err(domain_memory::UnscheduleError::AlreadyCancelled)));
+    drop(memory);
+
+    let memory = open_at(7_000);
+    assert_eq!(memory.run_due(), None, "nothing left to fire");
 }

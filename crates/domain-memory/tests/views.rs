@@ -21,14 +21,14 @@ domain::id!(
     struct OwnerId;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = WalletId, events(Credited))]
 struct Credit {
     owner: String,
     amount: u64,
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = WalletId, events(Noted))]
 struct Note;
 
@@ -68,7 +68,7 @@ impl Decide<Note> for Wallet {
     fn reply(_: &u64) {}
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = ClubId, events(Joined))]
 struct Join {
     member: String,

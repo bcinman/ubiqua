@@ -5,8 +5,8 @@ use domain::{Aggregate, Cx, Decide, Decision, Evolve};
 #[aggregate(
     id = AccountId,
     state = AccountState,
-    events(AccountOpened, MoneyDeposited, MoneyWithdrawn),
-    commands(OpenAccount, DepositMoney, WithdrawMoney),
+    events(AccountOpened, MoneyDeposited, MoneyWithdrawn, AccountFrozen, AccountThawed),
+    commands(OpenAccount, DepositMoney, WithdrawMoney, FreezeAccount, ThawAccount),
 )]
 pub struct Account;
 
@@ -17,6 +17,7 @@ pub enum AccountState {
     Open {
         owner: String,
         balance: u64,
+        frozen: bool,
     },
 }
 
@@ -24,10 +25,12 @@ impl Evolve for Account {
     fn evolve(state: &mut AccountState, event: &AccountEvent) {
         match (state, event) {
             (state, AccountEvent::AccountOpened(e)) => {
-                *state = AccountState::Open { owner: e.owner.clone(), balance: 0 };
+                *state = AccountState::Open { owner: e.owner.clone(), balance: 0, frozen: false };
             }
             (AccountState::Open { balance, .. }, AccountEvent::MoneyDeposited(e)) => *balance = e.balance_after,
             (AccountState::Open { balance, .. }, AccountEvent::MoneyWithdrawn(e)) => *balance = e.balance_after,
+            (AccountState::Open { frozen, .. }, AccountEvent::AccountFrozen(_)) => *frozen = true,
+            (AccountState::Open { frozen, .. }, AccountEvent::AccountThawed(_)) => *frozen = false,
             _ => {}
         }
     }
@@ -70,6 +73,9 @@ impl Decide<DepositMoney> for Account {
 impl Decide<WithdrawMoney> for Account {
     fn decide(state: &AccountState, cmd: &WithdrawMoney, _: &Cx) -> Decision<WithdrawMoney> {
         let balance = open(state)?;
+        if matches!(state, AccountState::Open { frozen: true, .. }) {
+            return Err(Frozen.into());
+        }
         if cmd.amount > balance {
             return Err(InsufficientFunds { balance, requested: cmd.amount }.into());
         }
@@ -79,4 +85,26 @@ impl Decide<WithdrawMoney> for Account {
     fn reply(state: &AccountState) -> Balance {
         balance(state)
     }
+}
+
+impl Decide<FreezeAccount> for Account {
+    fn decide(state: &AccountState, _: &FreezeAccount, _: &Cx) -> Decision<FreezeAccount> {
+        Ok(match state {
+            AccountState::Open { frozen: false, .. } => vec![AccountFrozen.into()],
+            _ => vec![],
+        })
+    }
+
+    fn reply(_: &AccountState) {}
+}
+
+impl Decide<ThawAccount> for Account {
+    fn decide(state: &AccountState, _: &ThawAccount, _: &Cx) -> Decision<ThawAccount> {
+        Ok(match state {
+            AccountState::Open { frozen: true, .. } => vec![AccountThawed.into()],
+            _ => vec![],
+        })
+    }
+
+    fn reply(_: &AccountState) {}
 }

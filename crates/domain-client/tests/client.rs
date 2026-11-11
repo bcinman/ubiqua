@@ -16,7 +16,7 @@ domain::id!(
     struct OtherId;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = CounterId, events(Added), rejects(TooBig), reply = i64)]
 struct Add {
     n: i64,
@@ -56,7 +56,7 @@ impl Decide<Add> for Counter {
     }
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = OtherId, events(Pinged))]
 struct Ping;
 
@@ -344,4 +344,113 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
             std::thread::park_timeout(Duration::from_millis(50));
         }
     }
+}
+
+/// Pings `<counter>` on `Other` for each addition, and again a little later.
+#[derive(domain::Policy)]
+#[policy(from(Counter(Added)))]
+struct PingBack;
+
+impl domain_memory::React for PingBack {
+    async fn react(
+        &self,
+        cx: &domain_memory::PolicyCx<Self>,
+        _: PingBackInput,
+    ) -> Result<(), domain_memory::PolicyError> {
+        let other = OtherId::new(cx.source::<Counter>().expect("from counters").as_str());
+        cx.send(&other, Ping)?;
+        cx.schedule(&other, Ping, cx.now().after(Duration::from_millis(50)))?;
+        Ok(())
+    }
+}
+
+#[test]
+fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
+    let memory = Arc::new(Memory::new().with::<Counting>().policy(PingBack));
+    let client = Client::<CountingApi>::in_process(memory.clone());
+    client.send(&c("a"), Add { n: 1 });
+
+    let pings = || memory.events(&OtherId::new("a")).len();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pings() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(pings(), 2, "the policy's ping, then the scheduled one");
+}
+
+#[test]
+fn an_inline_client_runs_policies_when_woken() {
+    let memory = Arc::new(Memory::new().with::<Counting>().policy(PingBack));
+    let client = Client::<CountingApi>::inline(memory.clone());
+    client.send(&c("a"), Add { n: 1 }).try_get().unwrap().unwrap();
+    assert_eq!(memory.events(&OtherId::new("a")).len(), 1, "the policy ran; the schedule isn't due");
+}
+
+// An adapter that answers from another thread, as an HTTP client would.
+
+#[derive(domain::Call, Debug, PartialEq)]
+#[call(system = Slow, returns = bool)]
+struct Check;
+
+#[derive(domain::ExternalSystem)]
+#[external_system(calls(Check))]
+struct Slow;
+
+struct SlowAdapter;
+
+impl domain::Answer<Check> for SlowAdapter {
+    async fn answer(&self, _: Check) -> domain::Answered<Check> {
+        let slot: Arc<Mutex<(Option<bool>, Option<Waker>)>> = Arc::default();
+        let answering = slot.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            let waker = {
+                let mut slot = answering.lock().unwrap();
+                slot.0 = Some(true);
+                slot.1.take()
+            };
+            waker.into_iter().for_each(Waker::wake);
+        });
+        Ok(std::future::poll_fn(|cx| {
+            let mut slot = slot.lock().unwrap();
+            match slot.0 {
+                Some(answer) => Poll::Ready(answer),
+                None => {
+                    slot.1 = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await)
+    }
+}
+
+#[derive(domain::Policy)]
+#[policy(from(Counter(Added)))]
+struct CheckThenPing;
+
+impl domain_memory::React for CheckThenPing {
+    async fn react(
+        &self,
+        cx: &domain_memory::PolicyCx<Self>,
+        _: CheckThenPingInput,
+    ) -> Result<(), domain_memory::PolicyError> {
+        if cx.call(Check).await? {
+            cx.send(&OtherId::new("checked"), Ping)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_call_answered_on_another_thread_wakes_the_domain_thread() {
+    let memory = Arc::new(Memory::new().with::<Counting>().policy(CheckThenPing).external(Slow, SlowAdapter));
+    let client = Client::<CountingApi>::in_process(memory.clone());
+    client.send(&c("a"), Add { n: 1 });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while memory.events(&OtherId::new("checked")).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(memory.events(&OtherId::new("checked")).len(), 1);
 }

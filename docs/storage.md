@@ -25,6 +25,9 @@ withdraw 500: rejected: InsufficientFunds { balance: 140, requested: 500 }
 | `events` | every event, in commit order |
 | `receipts` | each command's receipt, by command id |
 | `views`, `view_keys`, `view_entries`, `view_progress` | each view's version, state per key, emitted events, and how far it has read |
+| `schedules` | each [scheduled command](policies.md#schedules): when, and whether it ran or was cancelled |
+
+A [policy](policies.md) keeps how far it has read in `view_progress`, as `policy:FraudReview`.
 
 Values are JSON, so any SQLite tool can read them:
 
@@ -39,6 +42,9 @@ Account/sam-main|2|{"MoneyDeposited":{"amount":100,"balance_after":100}}
 ```diagram
 open ──▶ each view: stored at this version? ──yes──▶ load it, then apply the events it missed
                                           └──no───▶ rebuild it from every event
+each policy: stored before? ──yes──▶ act on the events it missed
+                            └──no───▶ start from now
+schedules ──▶ load the ones still waiting; overdue ones run at once
 first command to an account ──▶ read its events, evolve its state
 ```
 

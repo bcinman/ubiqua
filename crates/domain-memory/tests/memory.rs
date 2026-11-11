@@ -7,11 +7,11 @@ domain::id!(
     struct CounterId;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = CounterId, events(Incremented), reply = u64)]
 struct Increment;
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = CounterId, events(Incremented), rejects(TooHigh))]
 struct IncrementBelow {
     limit: u64,

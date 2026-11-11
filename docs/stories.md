@@ -24,9 +24,13 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.then_none(&id)` | no events recorded on `id` |
 | `.rejected(r)` | the command was refused with exactly `r` |
 | `.replied(reply)` | the command's reply |
-| `.at(timestamp)` | sets the clock for the next command |
+| `.at(timestamp)` | moves the clock forward to `timestamp` |
+| `.advance(duration)` | moves the clock forward, firing what's due |
 | `.view::<V>(&key, state)` | a view's state for one key |
 | `.emitted::<V>(&key, [events])` | every event a view emitted for one key |
+| `.policy(p)` | runs a policy |
+| `.call(call)` | a policy made exactly this call; answer with `.succeed(v)` or `.fail(e)` |
+| `.external(system, adapter)` | answers calls with a real adapter instead |
 
 ## Success
 
@@ -77,6 +81,27 @@ Story::new()
     .then(&lamp(), [Switched { on: true, at: Timestamp::from_millis(5) }]);
 ```
 
+## Policies
+
+A policy's commands show up as events on their own streams. Answer its calls in the story:
+
+```rust
+Story::new()
+    .policy(FraudReview)
+    .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+    .when(&a1(), WithdrawMoney { amount: 900 })
+    .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
+    .call(ScoreWithdrawal { account: a1(), amount: 900 })
+    .succeed(Risk(95))
+    .then(&a1(), [AccountFrozen])
+    .when(&a1(), WithdrawMoney { amount: 10 })
+    .rejected(Frozen)
+    .advance(FREEZE_FOR)                         // the scheduled thaw fires
+    .then(&a1(), [AccountThawed]);
+```
+
+`given` events are history: policies don't react to them. A story fails if a policy fails.
+
 ## Everything must be checked
 
 A story fails when a command does something no step checks:
@@ -89,7 +114,11 @@ Story::new().given(&lamp(), [Smashed]).when(&lamp(), Toggle);
 // panicked: story: Toggle left unchecked: rejection Broken; check it with .rejected(..)
 ```
 
-Each command is checked before the next `when` or `given`.
+Each command is checked before the next `when` or `given`. Calls nobody answered count too:
+
+```text
+panicked: story: .. left unchecked: call FraudCheck.ScoreWithdrawal ScoreWithdrawal { .. }
+```
 
 ## Only outcomes the command can have
 

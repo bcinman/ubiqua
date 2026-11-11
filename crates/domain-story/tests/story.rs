@@ -6,7 +6,7 @@ domain::id!(
     struct LampId;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = LampId, events(Switched), rejects(Broken), reply = bool)]
 struct Toggle;
 

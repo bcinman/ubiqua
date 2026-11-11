@@ -257,6 +257,10 @@ pub trait Model: 'static {
 pub trait Registry {
     fn aggregate<A: Evolve>(&mut self);
     fn view<V: Apply>(&mut self);
+    /// A command an aggregate decides, so a host can run it later, as a schedule does.
+    fn command<C: Command>(&mut self)
+    where
+        <C::Target as crate::AggregateId>::Aggregate: crate::Handles<C>;
 }
 
 impl<V: View> Clone for Entry<V> {

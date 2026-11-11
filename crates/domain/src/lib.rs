@@ -7,7 +7,9 @@
 extern crate self as domain;
 
 mod api;
+mod external;
 mod maybe;
+mod policy;
 mod values;
 mod view;
 
@@ -25,8 +27,10 @@ pub mod __private {
 }
 
 pub use api::{Api, Reads, Sends, SentVia};
-pub use domain_macros::{Aggregate, Api, Command, Event, Model, Rejection, View};
+pub use domain_macros::{Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Rejection, View};
+pub use external::{Adapter, Answer, Answered, Call, CallError, Calls, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};
+pub use policy::{Policy, PolicySources, Reacts};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
     Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Member, Model, NotCaughtUp, Origin, Position, Registry,
@@ -80,6 +84,10 @@ pub trait Aggregate: Sized + MaybeSend + MaybeSync + 'static {
     /// `Default` is the state of every instance before its first event.
     type State: Clone + Debug + Default + MaybeSend + MaybeSync + 'static;
     type Event: Events;
+
+    /// Registers each command it decides. `#[derive(Aggregate)]` implements it.
+    #[doc(hidden)]
+    fn register_commands<R: Registry>(_registry: &mut R) {}
 }
 
 /// Applies a recorded event to the state. It never fails: the event already happened.
@@ -89,7 +97,8 @@ pub trait Evolve: Aggregate {
 }
 
 /// A request for a change to one aggregate instance. Derive it with `#[derive(Command)]`.
-pub trait Command: Debug + MaybeSend + 'static {
+/// It serializes, so it can be scheduled for later.
+pub trait Command: Debug + Serialize + DeserializeOwned + MaybeSend + 'static {
     const NAME: &'static str;
     type Target: AggregateId;
     /// The events it may record.
@@ -100,6 +109,14 @@ pub trait Command: Debug + MaybeSend + 'static {
     /// Stored with the receipt, so a retry gets the same reply.
     type Reply: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
 }
+
+/// A command that declares no rejections, so it can run when nobody waits for its answer, as a
+/// scheduled command does. `#[derive(Command)]` implements it when `rejects(..)` is empty.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` can be rejected, so it can't be scheduled",
+    label = "a scheduled command reports a fact: remove its `rejects(..)` and record nothing when it no longer applies"
+)]
+pub trait NeverRejects: Command {}
 
 /// What a [`Decide`] handler returns: the events to record, or why the command is refused.
 pub type Decision<C> = Result<Vec<<C as Command>::Event>, <C as Command>::Rejection>;

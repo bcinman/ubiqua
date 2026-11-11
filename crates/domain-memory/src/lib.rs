@@ -8,10 +8,16 @@
 //! With [`Memory::persist_to`] it also keeps everything in a [`Store`], such as `domain-sqlite`'s,
 //! and picks up where it left off on the next run.
 
+mod calls;
+mod policies;
+mod schedules;
 mod store;
 mod views;
 
-pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, Store, StoreError, ViewRows};
+pub use calls::StubbedCall;
+pub use policies::{PolicyCx, PolicyError, React};
+pub use schedules::{ScheduleError, UnscheduleError};
+pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
 
 use domain::{
@@ -20,15 +26,21 @@ use domain::{
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use views::{AnyBox, Consumer, Delivery, ViewHost};
+
+/// Called when there's work for `Memory::run_due`.
+#[cfg(not(target_arch = "wasm32"))]
+type Hook = Arc<dyn Fn() + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+type Hook = Arc<dyn Fn()>;
 
 /// Reads one aggregate's history as deliveries, skipping the `(stream, seq)`s `keep` refuses.
 type HistoryFn = fn(&Memory, &dyn Fn(&str, u64) -> bool) -> Vec<Arc<Delivery>>;
 
 /// The aggregate an id belongs to.
-type AggregateOf<I> = <I as AggregateId>::Aggregate;
+pub(crate) type AggregateOf<I> = <I as AggregateId>::Aggregate;
 type StateOf<I> = <AggregateOf<I> as Aggregate>::State;
 type EventOf<I> = <AggregateOf<I> as Aggregate>::Event;
 
@@ -48,6 +60,21 @@ pub struct Memory {
     view_consumers: HashMap<TypeId, Arc<dyn Consumer>>,
     /// How to read each registered aggregate's history, for views added later.
     histories: HashMap<TypeId, HistoryFn>,
+    policies: Vec<Arc<dyn policies::PolicyRun>>,
+    /// Scheduled commands, by stream and command id.
+    schedules: Mutex<HashMap<(String, String), ScheduleRow>>,
+    /// How to send each kind of scheduled command, by `Aggregate.Command`.
+    firers: Mutex<HashMap<String, schedules::FireFn>>,
+    /// Schedules that can't fire yet: their command isn't hosted or doesn't decode.
+    stuck: Mutex<HashSet<(String, String)>>,
+    /// Adapters for external calls, by the call's `TypeId`.
+    answers: HashMap<TypeId, calls::AnswerFn>,
+    stub_calls: bool,
+    stubbed: Mutex<std::collections::VecDeque<StubbedCall>>,
+    hooks: Mutex<Vec<Hook>>,
+    /// `run_due` is running, and whether it should look again before it stops.
+    running: AtomicBool,
+    again: AtomicBool,
 }
 
 trait Clock: Fn() -> Timestamp + MaybeSend + MaybeSync {}
@@ -79,7 +106,75 @@ impl Memory {
             views: HashMap::new(),
             view_consumers: HashMap::new(),
             histories: HashMap::new(),
+            policies: Vec::new(),
+            schedules: Mutex::default(),
+            firers: Mutex::default(),
+            stuck: Mutex::default(),
+            answers: HashMap::new(),
+            stub_calls: false,
+            stubbed: Mutex::default(),
+            hooks: Mutex::default(),
+            running: AtomicBool::new(false),
+            again: AtomicBool::new(false),
         }
+    }
+
+    /// The time now, by this memory's clock.
+    pub fn now(&self) -> Timestamp {
+        (self.clock)()
+    }
+
+    /// Runs what's due: scheduled commands whose time has come, then each policy's events, until
+    /// nothing more can run now. Returns when something is next due, such as a schedule or a
+    /// failed policy's retry; call it again then, and whenever an [`on_wake`](Self::on_wake) hook
+    /// fires. `Client::in_process` does this on its domain thread.
+    ///
+    /// Safe to call from any thread, and from inside a policy: a call while it's already running
+    /// makes the running one look again.
+    pub fn run_due(self: &Arc<Self>) -> Option<Timestamp> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            self.again.store(true, Ordering::SeqCst);
+            return None;
+        }
+        let waker = waker_for(self);
+        let mut retry;
+        loop {
+            self.again.store(false, Ordering::SeqCst);
+            self.fire_due();
+            retry = None;
+            for policy in &self.policies {
+                if let policies::Next::RetryAt(at) = policy.run(self, &waker) {
+                    retry = Some(retry.map_or(at, |r: Timestamp| r.min(at)));
+                }
+            }
+            if self.again.load(Ordering::SeqCst) {
+                continue;
+            }
+            self.running.store(false, Ordering::SeqCst);
+            // A wake between the check and the release would be lost: look once more.
+            if !self.again.load(Ordering::SeqCst) || self.running.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+        [retry, self.next_schedule()].into_iter().flatten().min()
+    }
+
+    /// Calls `hook` whenever there's new work for [`run_due`](Self::run_due): an event for a
+    /// policy, an answered call, a new schedule. It should only arrange for `run_due` to be
+    /// called, such as by waking a thread.
+    pub fn on_wake(&self, hook: impl Fn() + MaybeSend + MaybeSync + 'static) {
+        lock(&self.hooks).push(Arc::new(hook));
+    }
+
+    /// Each policy's last failure, until it succeeds on that event.
+    pub fn policy_failures(&self) -> Vec<String> {
+        self.policies.iter().filter_map(|policy| policy.failure()).collect()
+    }
+
+    fn wake(&self) {
+        self.again.store(true, Ordering::SeqCst);
+        let hooks = lock(&self.hooks).clone();
+        hooks.iter().for_each(|hook| hook());
     }
 
     /// Keeps events, receipts and views in `store` too, so the next run picks up where this one
@@ -94,7 +189,10 @@ impl Memory {
             "call `persist_to` before `with` and before sending commands"
         );
         let session = store.new_session().unwrap_or_else(|e| panic!("the store failed: {e}"));
+        let schedules = store.schedules().unwrap_or_else(|e| panic!("the store failed: {e}"));
         self.id_prefix = format!("s{session}");
+        *lock(&self.schedules) =
+            schedules.into_iter().map(|row| ((row.stream.clone(), row.command_id.clone()), row)).collect();
         self.store = Some(Arc::new(store));
         self
     }
@@ -210,7 +308,7 @@ impl Memory {
             self.persist::<AggregateOf<C::Target>>(id, &recorded, Some(row)).map_err(unavailable)?;
         }
         instance.receipts.insert(command_id, Box::new(receipt.clone()));
-        self.commit(id, &mut instance, state, recorded);
+        self.commit(id, &mut instance, state, recorded, false);
         Ok(receipt)
     }
 
@@ -295,11 +393,12 @@ impl Memory {
         instance: &mut Instance<A>,
         state: A::State,
         recorded: Vec<Envelope<A::Event>>,
+        history: bool,
     ) {
         let consumers = self.consumers.get(&TypeId::of::<A>()).map_or(&[][..], |c| &c[..]);
         if !consumers.is_empty() {
             for envelope in &recorded {
-                let delivery = Arc::new(delivery_of::<A>(id, envelope));
+                let delivery = Arc::new(Delivery { history, ..delivery_of::<A>(id, envelope) });
                 consumers.iter().for_each(|consumer| consumer.push(delivery.clone()));
             }
         }
@@ -313,6 +412,9 @@ impl Memory {
             // The command has committed, so a view that panics doesn't fail it. The view stays
             // behind with its deliveries, and tries them again on the next read or command.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| consumer.drain()));
+        }
+        if !self.policies.is_empty() {
+            self.wake();
         }
     }
 
@@ -373,7 +475,7 @@ impl Memory {
                 recorded.push(Envelope { stream: stream.clone(), seq, at, command_id: None, event });
             }
             self.persist::<AggregateOf<I>>(id, &recorded, None).unwrap_or_else(|e| panic!("{e}"));
-            self.commit(id, &mut instance, state, recorded);
+            self.commit(id, &mut instance, state, recorded, true);
         }
         self.deliver::<AggregateOf<I>>();
     }
@@ -458,6 +560,36 @@ fn decode_event<A: Aggregate>(row: &EventRow) -> Result<(A::Id, Envelope<A::Even
     Ok((id, envelope))
 }
 
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    serde_json::from_str(text).map_err(|e| format!("{} doesn't decode: {e}", std::any::type_name::<T>()))
+}
+
+/// What a panic said.
+pub(crate) fn reason(panic: &(dyn Any + Send)) -> String {
+    let message = panic.downcast_ref::<&str>().copied().or(panic.downcast_ref::<String>().map(String::as_str));
+    format!("panicked: {}", message.unwrap_or("no message"))
+}
+
+/// Wakes `memory` when a call a policy waits on is answered.
+#[cfg(not(target_arch = "wasm32"))]
+fn waker_for(memory: &Arc<Memory>) -> std::task::Waker {
+    struct Wake(std::sync::Weak<Memory>);
+    impl std::task::Wake for Wake {
+        fn wake(self: Arc<Self>) {
+            if let Some(memory) = self.0.upgrade() {
+                memory.wake();
+            }
+        }
+    }
+    std::task::Waker::from(Arc::new(Wake(Arc::downgrade(memory))))
+}
+
+/// On wasm nothing crosses threads; the page calls `run_due` again.
+#[cfg(target_arch = "wasm32")]
+fn waker_for(_: &Arc<Memory>) -> std::task::Waker {
+    std::task::Waker::noop().clone()
+}
+
 fn encode_receipt<C: Command>(receipt: &Receipt<C>) -> Result<String, SendError<C::Rejection>> {
     json(&(receipt.version, &receipt.events, &receipt.reply))
         .map_err(|reason| SendError::Unavailable { command_id: receipt.command_id.clone(), reason })
@@ -532,17 +664,25 @@ impl<C: Command> AnyReceipt for Receipt<C> {
 }
 
 /// Hosts a model's views on a `Memory`, each after the sources it reads.
-struct Registrar<'m> {
-    memory: &'m mut Memory,
+pub(crate) struct Registrar<'m> {
+    pub(crate) memory: &'m mut Memory,
     /// Views being hosted right now, to catch a view that reads itself through others.
-    hosting: HashSet<TypeId>,
+    pub(crate) hosting: HashSet<TypeId>,
     /// Views rebuilt from the events, so the views that read them are rebuilt too.
-    rebuilt: HashSet<TypeId>,
+    pub(crate) rebuilt: HashSet<TypeId>,
 }
 
 impl Registry for Registrar<'_> {
     fn aggregate<A: Evolve>(&mut self) {
         self.memory.histories.insert(TypeId::of::<A>(), Memory::history::<A>);
+        A::register_commands(self);
+    }
+
+    fn command<C: Command>(&mut self)
+    where
+        AggregateOf<C::Target>: Handles<C>,
+    {
+        self.memory.register_firer::<C>();
     }
 
     fn view<V: Apply>(&mut self) {

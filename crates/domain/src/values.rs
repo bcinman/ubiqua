@@ -15,6 +15,16 @@ impl Timestamp {
         self.0
     }
 
+    /// `self + duration`, saturating.
+    pub fn after(self, duration: std::time::Duration) -> Self {
+        Self(self.0.saturating_add(duration.as_millis() as u64))
+    }
+
+    /// How long from `self` until `later`; zero if `later` isn't later.
+    pub fn until(self, later: Timestamp) -> std::time::Duration {
+        std::time::Duration::from_millis(later.0.saturating_sub(self.0))
+    }
+
     /// The system clock. Not available on wasm, which has none; hosts there take a clock.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn now() -> Self {

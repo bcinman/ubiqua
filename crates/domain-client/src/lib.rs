@@ -53,26 +53,49 @@ enum Runner {
     Inline,
     /// Commands run, in order, on the client's domain thread.
     #[cfg(not(target_arch = "wasm32"))]
-    Thread(std::sync::mpsc::Sender<Job>),
+    Thread(Arc<std::sync::mpsc::Sender<Job>>),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 type Job = Box<dyn FnOnce(&Memory) + Send>;
 
 impl<A: Api> Client<A> {
-    /// Runs commands on a domain thread of their own, so the UI thread never waits on one. On wasm,
-    /// which has no threads, they run on the caller's thread.
+    /// Runs commands on a domain thread of their own, so the UI thread never waits on one. The
+    /// model's policies and scheduled commands run there too, between commands. On wasm, which
+    /// has no threads, this is [`inline`](Self::inline).
     pub fn in_process(memory: Arc<Memory>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            use std::sync::mpsc::RecvTimeoutError;
             let (jobs, queue) = std::sync::mpsc::channel::<Job>();
+            let jobs = Arc::new(jobs);
+            // Wake the thread when there's work for policies. Weak, so the thread still stops
+            // once every client is gone.
+            let wake = Arc::downgrade(&jobs);
+            memory.on_wake(move || {
+                if let Some(jobs) = wake.upgrade() {
+                    let _ = jobs.send(Box::new(|_| {}));
+                }
+            });
             let worker = memory.clone();
             std::thread::Builder::new()
                 .name("domain".into())
                 .spawn(move || {
-                    for job in queue {
-                        // A panicking `send_then` callback mustn't stop the commands after it.
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&worker)));
+                    let guard = std::panic::AssertUnwindSafe(&worker);
+                    loop {
+                        let due = std::panic::catch_unwind(|| guard.run_due()).ok().flatten();
+                        let next = match due {
+                            Some(at) => queue.recv_timeout(worker.now().until(at)),
+                            None => queue.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                        };
+                        match next {
+                            // A panicking `send_then` callback mustn't stop the commands after it.
+                            Ok(job) => {
+                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&worker)));
+                            }
+                            Err(RecvTimeoutError::Timeout) => {}
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
                     }
                 })
                 .expect("spawn the domain thread");
@@ -82,8 +105,16 @@ impl<A: Api> Client<A> {
         Self::inline(memory)
     }
 
-    /// Runs commands on the caller's thread: for tests, and anywhere waiting is fine.
+    /// Runs commands on the caller's thread: for tests, and anywhere waiting is fine. Policies
+    /// run on whichever thread wakes them. Scheduled commands fire when something calls
+    /// `Memory::run_due`; on the web, call it from a timer.
     pub fn inline(memory: Arc<Memory>) -> Self {
+        let weak = Arc::downgrade(&memory);
+        memory.on_wake(move || {
+            if let Some(memory) = weak.upgrade() {
+                memory.run_due();
+            }
+        });
         Self { memory, runner: Runner::Inline, _api: PhantomData }
     }
 

@@ -134,6 +134,38 @@ error[E0277]: `BankApi` doesn't let clients read `Statement`
 
 The `send` check is in [`domain-client`'s `compile_checks.rs`](../crates/domain-client/src/compile_checks.rs).
 
+## Scheduling a command that can be rejected
+
+```rust
+#[command(target = DoorId, events(Closed), rejects(Jammed))]
+pub struct Close;
+
+memory.schedule(&front, Close, at, "close-1");
+```
+
+```text
+error[E0277]: `Close` can be rejected, so it can't be scheduled
+  a scheduled command reports a fact: remove its `rejects(..)` and record nothing when it no longer applies
+```
+
+## An adapter that misses a call
+
+```rust
+#[external_system(calls(Lock, Unlock))]
+pub struct Locks;
+
+impl Answer<Lock> for HalfLocks { .. }     // no Answer<Unlock>
+
+memory.external(Locks, HalfLocks);
+```
+
+```text
+error[E0277]: `HalfLocks` doesn't answer `Unlock`
+  implement `Answer<Unlock>` for `HalfLocks`
+```
+
+Both checks are in [`domain-client`'s `compile_checks.rs`](../crates/domain-client/src/compile_checks.rs).
+
 ## A missing attribute
 
 ```rust

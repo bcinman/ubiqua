@@ -97,10 +97,14 @@ fn command(input: &DeriveInput) -> syn::Result<Tokens> {
     let rejection_union = union(&input.vis, &rejection_enum, &rejects, &rejections_doc, Kind::Rejections);
     let variants: Vec<&Ident> = events.iter().map(last_ident).collect();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let never_rejects = rejects
+        .is_empty()
+        .then(|| quote!(impl #impl_generics ::domain::NeverRejects for #name #ty_generics #where_clause {}));
 
     Ok(quote! {
         #event_union
         #rejection_union
+        #never_rejects
 
         impl<__E> ::domain::Widen<__E> for #event_enum
         where #( __E: ::std::convert::From<#events>, )*
@@ -157,6 +161,10 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
             type Id = #id;
             type State = #state;
             type Event = #event_enum;
+
+            fn register_commands<__R: ::domain::Registry>(registry: &mut __R) {
+                #( registry.command::<#commands>(); )*
+            }
         }
 
         impl ::domain::AggregateId for #id {
@@ -241,14 +249,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
         } else if meta.path.is_ident("state") {
             state = Some(meta.value()?.parse::<Type>()?);
         } else if meta.path.is_ident("from") {
-            meta.parse_nested_meta(|source| {
-                let reads = paths(&source)?;
-                if reads.is_empty() {
-                    return Err(source.error("list the events the view reads from this source"));
-                }
-                sources.push((source.path.clone(), reads));
-                Ok(())
-            })?;
+            sources = parse_from(&meta, "view")?;
         } else if meta.path.is_ident("events") {
             events = Some(paths(&meta)?);
         } else if meta.path.is_ident("key_of") {
@@ -276,15 +277,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     let tag = name.to_string();
     let version = version.map(|v| quote!(const VERSION: u64 = #v;));
 
-    // Every event the view reads, once each, in the order first listed.
-    let mut reads: Vec<Path> = Vec::new();
-    for (_, list) in &sources {
-        for path in list {
-            if !reads.iter().any(|r| last_ident(r) == last_ident(path)) {
-                reads.push(path.clone());
-            }
-        }
-    }
+    let reads = reads_of(&sources);
     let input_enum = format_ident!("{}Input", name);
     let input_doc = format!("The events `{name}` reads.");
     let input_union = union(&input.vis, &input_enum, &reads, &input_doc, Kind::Events);
@@ -301,7 +294,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
 
     let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
     let consumes = sources.iter().map(|(source, list)| {
-        let variants = list.iter().map(last_ident);
+        let pick = pick_input(source, list, &input_enum);
         let key_expr = if key_of.iter().any(|path| last_ident(path) == last_ident(source)) {
             quote!(<Self as ::domain::KeyOf<#source>>::key_of(::domain::Origin { id, state }, &input)?)
         } else {
@@ -317,15 +310,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
                     state: &<#source as ::domain::Source>::SourceState,
                 ) -> ::std::option::Option<(#key, #input_enum)> {
                     let _ = state;
-                    let input = #(
-                        if let ::std::option::Option::Some(e) =
-                            <<#source as ::domain::Source>::SourceEvent as ::domain::Member<#list>>::get(event)
-                        {
-                            #input_enum::#variants(::std::clone::Clone::clone(e))
-                        } else
-                    )* {
-                        return ::std::option::Option::None;
-                    };
+                    let input = #pick;
                     let key = #key_expr;
                     ::std::option::Option::Some((key, input))
                 }
@@ -373,6 +358,188 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         };
     })
+}
+
+/// `#[policy(from(Source(Event, ..), ..))]`
+///
+/// Generates `<Name>Input` (the events it reacts to), `impl Policy`, and `impl Reacts` per source.
+#[proc_macro_derive(Policy, attributes(policy))]
+pub fn derive_policy(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    policy(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let mut sources = Vec::new();
+    parse_attr(input, "policy", |meta| {
+        if meta.path.is_ident("from") {
+            sources = parse_from(&meta, "policy")?;
+            Ok(())
+        } else {
+            Err(meta.error("expected `from`"))
+        }
+    })?;
+    if sources.is_empty() {
+        return Err(syn::Error::new_spanned(name, "a policy needs `#[policy(from(Source(Event, ..)))]`"));
+    }
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(&input.generics, "a policy can't be generic"));
+    }
+    let tag = name.to_string();
+    let input_enum = format_ident!("{}Input", name);
+    let doc = format!("The events `{name}` reacts to.");
+    let input_union = union(&input.vis, &input_enum, &reads_of(&sources), &doc, Kind::Events);
+    let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
+    let reacts = sources.iter().map(|(source, list)| {
+        let pick = pick_input(source, list, &input_enum);
+        quote! {
+            impl ::domain::Reacts<#source> for #name {
+                #[allow(clippy::question_mark)]
+                fn route(
+                    event: &<#source as ::domain::Source>::SourceEvent,
+                ) -> ::std::option::Option<#input_enum> {
+                    ::std::option::Option::Some(#pick)
+                }
+            }
+        }
+    });
+    Ok(quote! {
+        #input_union
+
+        impl ::domain::Policy for #name {
+            const NAME: &'static str = #tag;
+            type Input = #input_enum;
+
+            fn sources<__S: ::domain::PolicySources<Self>>(sources: &mut __S) {
+                #( sources.source::<#source_paths>(); )*
+            }
+        }
+
+        #( #reacts )*
+    })
+}
+
+/// `#[call(system = System, returns = Type, errors(..))]`
+///
+/// Generates `<Name>Error` and `impl Call`. `returns` defaults to `()`, `errors` to none.
+#[proc_macro_derive(Call, attributes(call))]
+pub fn derive_call(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    call(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn call(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut system, mut returns, mut errors) = (None, None, Vec::new());
+    parse_attr(input, "call", |meta| {
+        if meta.path.is_ident("system") {
+            system = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("returns") {
+            returns = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("errors") {
+            errors = paths(&meta)?;
+        } else {
+            return Err(meta.error("expected `system`, `returns` or `errors`"));
+        }
+        Ok(())
+    })?;
+    let system = system.ok_or_else(|| syn::Error::new_spanned(name, "a call needs `#[call(system = .., ..)]`"))?;
+    let returns = returns.map_or_else(|| quote!(()), |t| quote!(#t));
+    let tag = name.to_string();
+    let error_enum = format_ident!("{}Error", name);
+    let doc = format!("The refusals `{name}` may be answered with.");
+    let error_union = union(&input.vis, &error_enum, &errors, &doc, Kind::Rejections);
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    Ok(quote! {
+        #error_union
+
+        impl #impl_generics ::domain::Call for #name #ty_generics #where_clause {
+            const NAME: &'static str = #tag;
+            const SYSTEM: &'static str = <#system as ::domain::ExternalSystem>::NAME;
+            type Returns = #returns;
+            type Error = #error_enum;
+        }
+    })
+}
+
+/// `#[external_system(calls(..))]`: `impl ExternalSystem`, and `impl Adapter<I>` for every `I`
+/// that answers each call.
+#[proc_macro_derive(ExternalSystem, attributes(external_system))]
+pub fn derive_external_system(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    external_system(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn external_system(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let mut calls = Vec::new();
+    parse_attr(input, "external_system", |meta| {
+        if meta.path.is_ident("calls") {
+            calls = paths(&meta)?;
+            Ok(())
+        } else {
+            Err(meta.error("expected `calls`"))
+        }
+    })?;
+    let tag = name.to_string();
+    Ok(quote! {
+        impl ::domain::ExternalSystem for #name {
+            const NAME: &'static str = #tag;
+        }
+
+        impl<__I> ::domain::Adapter<__I> for #name
+        where #( __I: ::domain::Answer<#calls>, )*
+        {
+            fn register<__R: ::domain::Calls>(adapter: ::std::sync::Arc<__I>, calls: &mut __R) {
+                let _ = &adapter;
+                #( calls.answer::<#calls, __I>(::std::clone::Clone::clone(&adapter)); )*
+            }
+        }
+    })
+}
+
+/// `from(Source(Event, ..), ..)`: each source with the events read from it.
+fn parse_from(meta: &ParseNestedMeta, what: &str) -> syn::Result<Vec<(Path, Vec<Path>)>> {
+    let mut sources = Vec::new();
+    meta.parse_nested_meta(|source| {
+        let reads = paths(&source)?;
+        if reads.is_empty() {
+            return Err(source.error(format!("list the events the {what} reads from this source")));
+        }
+        sources.push((source.path.clone(), reads));
+        Ok(())
+    })?;
+    Ok(sources)
+}
+
+/// Every event read from any source, once each, in the order first listed.
+fn reads_of(sources: &[(Path, Vec<Path>)]) -> Vec<Path> {
+    let mut reads: Vec<Path> = Vec::new();
+    for (_, list) in sources {
+        for path in list {
+            if !reads.iter().any(|r| last_ident(r) == last_ident(path)) {
+                reads.push(path.clone());
+            }
+        }
+    }
+    reads
+}
+
+/// An expression turning `event`, from `source`, into the input enum, or returning `None`.
+fn pick_input(source: &Path, list: &[Path], input_enum: &Ident) -> Tokens {
+    let variants = list.iter().map(last_ident);
+    quote! {
+        #(
+            if let ::std::option::Option::Some(e) =
+                <<#source as ::domain::Source>::SourceEvent as ::domain::Member<#list>>::get(event)
+            {
+                #input_enum::#variants(::std::clone::Clone::clone(e))
+            } else
+        )* {
+            return ::std::option::Option::None;
+        }
+    }
 }
 
 fn model(input: &DeriveInput) -> syn::Result<Tokens> {

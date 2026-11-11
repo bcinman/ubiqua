@@ -67,7 +67,7 @@ send ──▶ decide ──▶ commit ─────────────�
 Views: see [Views](views.md#read-it). The aggregates themselves:
 
 ```rust
-bank.state(&sam);     // AccountState::Open { owner: "sam", balance: 70 }
+bank.state(&sam);     // AccountState::Open { owner: "sam", balance: 70, frozen: false }
 bank.events(&sam);    // Vec<Envelope<AccountEvent>>, oldest first
 bank.versions();      // [("Account/sam-main", 3)]
 ```
@@ -108,6 +108,15 @@ let bank = Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>();
 ```
 
 See [Keep it on disk](storage.md).
+
+## Policies and schedules
+
+```rust
+let bank = Arc::new(Memory::new().with::<Bank>().policy(FraudReview).external(FraudCheck, Vendor));
+let next = bank.run_due();        // runs what's due; Some(when) to call it again
+```
+
+`Client::in_process` calls it for you. See [Policies](policies.md#who-runs-them).
 
 ## Set the clock
 

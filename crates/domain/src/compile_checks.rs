@@ -7,7 +7,7 @@
 //! # use domain::*;
 //! domain::id!(pub struct DoorId;);
 //!
-//! #[derive(Command, Debug)]
+//! #[derive(Command, Debug, serde::Serialize, serde::Deserialize)]
 //! #[command(target = DoorId, events(Closed), rejects(Jammed))]
 //! pub struct Close;
 //!
@@ -46,7 +46,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Opened;
 //! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Jammed;
@@ -60,7 +60,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Jammed;
 //! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Locked;
@@ -74,7 +74,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! #[derive(Aggregate)]
 //! #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))]
@@ -90,7 +90,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Opened;
 //! #[derive(Aggregate)]
@@ -202,7 +202,7 @@
 //! ```
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
@@ -223,7 +223,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
@@ -244,7 +244,7 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }

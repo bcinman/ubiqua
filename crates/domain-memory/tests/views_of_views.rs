@@ -17,19 +17,19 @@ domain::id!(
     struct Everyone;
 );
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = AccountId, events(Opened))]
 struct Open {
     owner: String,
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = AccountId, events(Moved))]
 struct Move {
     amount: i64,
 }
 
-#[derive(Command, Debug)]
+#[derive(Command, Debug, Serialize, Deserialize)]
 #[command(target = AccountId, events(Closed))]
 struct Close;
 

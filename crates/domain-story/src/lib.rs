@@ -1,22 +1,27 @@
 //! Stories: given this history, when this command, then these events.
 //!
 //! A story runs the real model in memory and must account for everything it does. It panics when a
-//! command records events no `then` checks, or is rejected and no `rejected` checks it.
+//! command records events no `then` checks, is rejected and no `rejected` checks it, or an external
+//! call is left unanswered. Policies run after every step, and calls to external systems without an
+//! adapter wait until the story answers them.
 
 use domain::{
-    Aggregate, AggregateId, Apply, Command, Cursor, Evolve, Handles, Model, Receipt, SendError, StreamId, Timestamp,
+    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, Cursor, Evolve, Handles, Model, Receipt,
+    SendError, StreamId, Timestamp,
 };
-use domain_memory::Memory;
+use domain_memory::{Memory, React, StubbedCall};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 type AggregateOf<I> = <I as AggregateId>::Aggregate;
 type EventOf<I> = <AggregateOf<I> as Aggregate>::Event;
 
 /// The model's history and clock. Start one with [`Story::new`].
 pub struct Story {
-    memory: Memory,
+    memory: Arc<Memory>,
     clock: Arc<AtomicU64>,
     /// How far each stream's events have been accounted for.
     seen: HashMap<StreamId, u64>,
@@ -33,14 +38,29 @@ impl Story {
     pub fn new() -> Self {
         let clock = Arc::new(AtomicU64::new(0));
         let now = clock.clone();
-        let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::Relaxed)));
-        Self { memory, clock, seen: HashMap::new() }
+        let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::Relaxed))).stub_calls();
+        Self { memory: Arc::new(memory), clock, seen: HashMap::new() }
     }
 
     /// Runs the model's views too, so `view` and `emitted` can check them.
     pub fn with<M: Model>(self) -> Self {
+        self.build(Memory::with::<M>)
+    }
+
+    /// Runs a policy after every step. Its commands' events must be checked like any others.
+    pub fn policy<P: React>(self, policy: P) -> Self {
+        self.build(|memory| memory.policy(policy))
+    }
+
+    /// Answers `system`'s calls with a real adapter instead of the story.
+    pub fn external<S: Adapter<I>, I>(self, system: S, adapter: I) -> Self {
+        self.build(|memory| memory.external(system, adapter))
+    }
+
+    fn build(self, f: impl FnOnce(Memory) -> Memory) -> Self {
         let Story { memory, clock, seen } = self;
-        Story { memory: memory.with::<M>(), clock, seen }
+        let memory = Arc::try_unwrap(memory).unwrap_or_else(|_| panic!("story: set it up before `given` and `when`"));
+        Story { memory: Arc::new(f(memory)), clock, seen }
     }
 
     /// History: events already recorded on `id`, written without deciding any command.
@@ -52,13 +72,26 @@ impl Story {
     {
         self.memory.append(id, events);
         self.catch_up();
+        self.run();
         self
     }
 
-    /// Sets the clock that later commands are decided at.
+    /// Sets the clock that later commands are decided at. Scheduled commands now due run.
+    ///
+    /// # Panics
+    /// When `now` is earlier than the clock.
     pub fn at(self, now: Timestamp) -> Self {
+        let before = Timestamp::from_millis(self.clock.load(Ordering::Relaxed));
+        assert!(now >= before, "story: the clock only moves forward, from {before:?} to {now:?}");
         self.clock.store(now.as_millis(), Ordering::Relaxed);
+        self.run();
         self
+    }
+
+    /// Moves the clock forward. Scheduled commands now due run.
+    pub fn advance(self, by: Duration) -> Self {
+        let now = Timestamp::from_millis(self.clock.load(Ordering::Relaxed)).after(by);
+        self.at(now)
     }
 
     /// Sends a command. Check what it did with the returned [`When`].
@@ -68,12 +101,22 @@ impl Story {
         AggregateOf<C::Target>: Handles<C>,
     {
         let outcome = self.memory.send(id, command);
+        self.run();
         When { story: self, outcome, checked_rejection: false, finished: false }
     }
 
     /// The memory the story runs on, for checks a story step doesn't cover.
     pub fn memory(&self) -> &Memory {
         &self.memory
+    }
+
+    /// Runs the policies and anything due, and fails on a policy that failed.
+    fn run(&self) {
+        self.memory.run_due();
+        let failures = self.memory.policy_failures();
+        if !failures.is_empty() {
+            panic!("story: {}", failures.join("; "));
+        }
     }
 
     fn catch_up(&mut self) {
@@ -88,6 +131,7 @@ impl Story {
                 let seen = self.seen.get(&stream).copied().unwrap_or(0);
                 (version > seen).then(|| format!("{} event(s) on {stream}", version - seen))
             })
+            .chain(self.memory.waiting_calls().into_iter().map(|call| format!("call {call}; check it with .call(..)")))
             .collect()
     }
 }
@@ -163,10 +207,31 @@ impl<C: Command> When<C> {
         self
     }
 
-    /// Sets the clock for the next command.
-    pub fn at(self, now: Timestamp) -> Self {
-        self.story.clock.store(now.as_millis(), Ordering::Relaxed);
+    /// Sets the clock. Scheduled commands now due run; check their events with `then`.
+    pub fn at(mut self, now: Timestamp) -> Self {
+        let story = std::mem::take(&mut self.story);
+        self.story = story.at(now);
         self
+    }
+
+    /// Moves the clock forward. Scheduled commands now due run.
+    pub fn advance(mut self, by: Duration) -> Self {
+        let story = std::mem::take(&mut self.story);
+        self.story = story.advance(by);
+        self
+    }
+
+    /// Checks the next call a policy made to an external system, which waits for an answer:
+    /// follow it with `succeed` or `fail`.
+    pub fn call<K: Call>(self, expected: K) -> Called<C, K> {
+        let Some(call) = self.story.memory.next_call() else {
+            panic!("story: expected {}.{} {expected:?}, but nothing called", K::SYSTEM, K::NAME);
+        };
+        match call.args::<K>() {
+            Some(args) => assert_eq!(args, &expected, "{}.{} was called with", K::SYSTEM, K::NAME),
+            None => panic!("story: expected {}.{} {expected:?}, but the next call is {call}", K::SYSTEM, K::NAME),
+        }
+        Called { when: Some(self), call: Some(call), _call: PhantomData }
     }
 
     /// Adds history, after checking this command was accounted for.
@@ -197,6 +262,7 @@ impl<C: Command> When<C> {
 
     fn finish(&mut self) {
         self.finished = true;
+        self.story.run();
         let mut problems = self.story.unchecked();
         if !self.checked_rejection {
             match &self.outcome {
@@ -215,6 +281,44 @@ impl<C: Command> Drop for When<C> {
     fn drop(&mut self) {
         if !self.finished && !std::thread::panicking() {
             self.finish();
+        }
+    }
+}
+
+/// A call the story checked, waiting for its answer.
+pub struct Called<C: Command, K: Call> {
+    when: Option<When<C>>,
+    call: Option<StubbedCall>,
+    _call: PhantomData<fn() -> K>,
+}
+
+impl<C: Command, K: Call> Called<C, K> {
+    /// Answers the call with what it returns. The policy carries on.
+    pub fn succeed(self, returns: K::Returns) -> When<C> {
+        self.answer(Ok(returns))
+    }
+
+    /// Answers the call with one of its declared errors. The policy carries on.
+    pub fn fail(self, error: impl Into<K::Error>) -> When<C> {
+        self.answer(Err(CallError::Refused(error.into())))
+    }
+
+    fn answer(mut self, answer: domain::Answered<K>) -> When<C> {
+        self.call.take().expect("answered once").answer::<K>(answer);
+        let when = self.when.take().expect("answered once");
+        when.story.run();
+        when
+    }
+}
+
+impl<C: Command, K: Call> Drop for Called<C, K> {
+    fn drop(&mut self) {
+        if self.call.is_some() && !std::thread::panicking() {
+            panic!(
+                "story: {}.{} was checked but not answered; follow .call(..) with .succeed(..) or .fail(..)",
+                K::SYSTEM,
+                K::NAME
+            );
         }
     }
 }

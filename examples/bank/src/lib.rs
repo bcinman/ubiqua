@@ -2,10 +2,12 @@
 
 mod account;
 mod commands;
+mod fraud;
 mod views;
 
 pub use account::{Account, AccountEvent, AccountState};
 pub use commands::*;
+pub use fraud::*;
 pub use views::*;
 
 domain::id!(

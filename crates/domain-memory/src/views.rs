@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
@@ -91,6 +92,8 @@ pub(crate) trait Consumer {
     fn history(&self) -> Vec<Rc<Delivery>>;
     /// Deliver this view's emitted entries to `consumer` from now on.
     fn add_downstream(&self, consumer: Rc<dyn Consumer>);
+    /// The flags that say this view, or one it reads, is behind.
+    fn behind(&self, _flags: &mut Vec<Arc<AtomicBool>>) {}
 }
 
 type RouteFn<V> = fn(&Delivery) -> Option<(<V as Keyed>::Key, <V as Keyed>::Input)>;
@@ -110,6 +113,31 @@ pub(crate) struct ViewHost<V: Apply> {
     data: RefCell<Data<V>>,
     store: Option<Rc<dyn Store>>,
     hub: Rc<Hub>,
+    /// Set when applying panicked, so a delivery waits in the inbox; cleared once it's applied.
+    behind: Arc<AtomicBool>,
+    /// A copy of the states that other threads read, once one has asked.
+    copy: RefCell<Option<Arc<ViewCopy<V>>>>,
+}
+
+/// A copy of a view's states, which the memory's thread keeps current as it applies them, so
+/// other threads read them without a job. It can show a command whose batch is still being
+/// stored, as a prediction would.
+#[doc(hidden)]
+pub struct ViewCopy<V: Apply> {
+    states: Mutex<HashMap<V::Key, V::State>>,
+    /// Set while this view, or one it reads, is behind: read in a job then, which fails as the
+    /// view does.
+    behind: Vec<Arc<AtomicBool>>,
+}
+
+impl<V: Apply> ViewCopy<V> {
+    /// The key's state, or `None` while the view is behind.
+    pub fn get(&self, key: &V::Key) -> Option<Option<V::State>> {
+        if self.behind.iter().any(|behind| behind.load(Ordering::SeqCst)) {
+            return None;
+        }
+        Some(lock(&self.states).get(key).cloned())
+    }
 }
 
 struct Data<V: Apply> {
@@ -161,7 +189,25 @@ impl<V: Apply> ViewHost<V> {
             data: RefCell::new(Data { keys: HashMap::new(), progress: HashMap::new(), unsaved: Unsaved::default() }),
             store,
             hub,
+            behind: Arc::default(),
+            copy: RefCell::default(),
         }
+    }
+
+    /// The copy of its states other threads read, starting it with every state now.
+    pub(crate) fn copy(&self) -> Arc<ViewCopy<V>> {
+        if let Some(copy) = &*self.copy.borrow() {
+            return copy.clone();
+        }
+        let data = self.data.borrow();
+        let states = data.keys.iter().filter_map(|(key, k)| Some((key.clone(), k.state.as_deref()?.clone())));
+        let states = Mutex::new(states.collect());
+        drop(data);
+        let mut behind = Vec::new();
+        self.behind(&mut behind);
+        let copy = Arc::new(ViewCopy { states, behind });
+        *self.copy.borrow_mut() = Some(copy.clone());
+        copy
     }
 
     /// Takes in what the store holds for this view.
@@ -273,6 +319,9 @@ impl<V: Apply> ViewHost<V> {
             let downstream = self.downstream.borrow_mut();
             let k = data.keys.entry(key.clone()).or_default();
             k.state = Some(state.clone());
+            if changed && let Some(copy) = &*self.copy.borrow() {
+                lock(&copy.states).insert(key.clone(), (*state).clone());
+            }
             let traced = (changed || !emitted.is_empty()) && self.hub.observed();
             let trace = traced.then(|| {
                 let first = k.entries.len() as u64 + 1;
@@ -354,6 +403,14 @@ impl<V: Apply> Consumer for ViewHost<V> {
     }
 
     fn drain(&self) {
+        /// Marks the view behind when applying panics, and caught up when it doesn't.
+        struct Behind<'a>(&'a AtomicBool);
+        impl Drop for Behind<'_> {
+            fn drop(&mut self) {
+                self.0.store(std::thread::panicking(), Ordering::SeqCst);
+            }
+        }
+        let behind = Behind(&self.behind);
         let mut wakeups = Vec::new();
         {
             // Holding `data` makes this the only drainer; a delivery leaves the inbox once applied.
@@ -366,6 +423,7 @@ impl<V: Apply> Consumer for ViewHost<V> {
             }
             self.save(&mut data);
         }
+        drop(behind);
         // Subscribers run outside the lock, so they may read this view or send commands.
         wakeups.into_iter().for_each(Wakeup::wake);
         self.hub.flush();
@@ -400,6 +458,11 @@ impl<V: Apply> Consumer for ViewHost<V> {
 
     fn add_downstream(&self, consumer: Rc<dyn Consumer>) {
         self.downstream.borrow_mut().push(consumer);
+    }
+
+    fn behind(&self, flags: &mut Vec<Arc<AtomicBool>>) {
+        flags.push(self.behind.clone());
+        self.upstream.iter().for_each(|upstream| upstream.behind(flags));
     }
 }
 

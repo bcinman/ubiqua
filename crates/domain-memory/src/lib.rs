@@ -27,7 +27,7 @@ pub use schedules::{ScheduleError, UnscheduleError};
 use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
 pub use store::{Store, StoreError};
 pub use telemetry::{Telemetry, TraceFeed};
-pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
+pub use views::{Feed, Recv, Subscription, ViewCopy, ViewReader, Watch};
 #[doc(hidden)]
 pub use views::{Publisher, channel};
 

@@ -104,9 +104,10 @@ fn runtime() -> Runtime {
     Runtime::spawn(memory)
 }
 
-/// Waits until the domain thread has run every job handed to it so far: a read queues behind them.
+/// Waits until the domain thread has run every job handed to it so far: a snapshot queues behind
+/// them. A `get` doesn't, once it reads the view's copy.
 fn settled(client: &Client<CountingApi>) {
-    let _ = block_on(client.view::<Total>().get(&c("settled")));
+    let _ = block_on(client.view::<Total>().snapshot(&c("settled")));
 }
 
 #[test]
@@ -310,6 +311,26 @@ fn a_listener_keeps_its_live_view_running() {
     called.store(false, Ordering::SeqCst);
     block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
     assert!(called.load(Ordering::SeqCst), "the listener alone keeps the live view fed");
+}
+
+#[test]
+fn a_read_resolves_at_once_while_the_domain_thread_is_busy() {
+    let runtime = runtime();
+    let client = Client::<CountingApi>::in_process(runtime.clone());
+    block_on(client.send(&c("a"), Add { n: 4 })).unwrap();
+    // The first read makes the copy.
+    assert_eq!(block_on(client.view::<Total>().get(&c("a"))), Ok(Some(4)));
+
+    let (release, gate) = mpsc::channel::<()>();
+    runtime.exec(move |_| gate.recv(), |_| {});
+    let totals = client.view::<Total>();
+    assert_eq!(totals.get(&c("a")).try_get(), Some(Ok(Some(4))), "read without waiting for the job ahead");
+    assert_eq!(totals.get(&c("b")).try_get(), Some(Ok(None)));
+    release.send(()).unwrap();
+
+    // A change shows once its command is answered.
+    block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
+    assert_eq!(totals.get(&c("a")).try_get(), Some(Ok(Some(5))));
 }
 
 /// Polls again only when woken, so a missing wake fails instead of being re-polled.

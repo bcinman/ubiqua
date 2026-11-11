@@ -109,7 +109,7 @@ bank.exec(|memory| memory.send(&sam, DepositMoney { amount: 1 }), |sent| show(se
 let events = bank.call(|memory| memory.events(&sam))?;    // waits; for tests and scripts
 ```
 
-Reads queue too. A client's `get` or the server's runs as a job, and a live view or feed is started by one, then fed from the runtime's thread. Open the store inside the closure, since the store stays on that thread too.
+Reads queue too, except a client's `get`, which reads a copy of the view's states that the runtime's thread keeps current. The server's reads run as jobs, and a live view or feed is started by one, then fed from the runtime's thread. Open the store inside the closure, since the store stays on that thread too.
 
 The runtime runs the jobs that queued up together, as one batch. With [SQLite](storage.md), a batch is one transaction, so many commands reach the disk with one write. Each job's answer goes out once its batch is stored. If a batch can't be stored, the runtime answers `Unavailable` from then on: restart to carry on from what the file holds.
 

@@ -11,12 +11,16 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::CommandIds;
-use crate::{Memory, reason};
-use domain::{CommandId, MaybeSend};
+use crate::views::{SendBox, ViewCopy};
+use crate::{Memory, lock, reason};
+use domain::{Apply, CommandId, MaybeSend};
+use std::any::TypeId;
+use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// The most jobs one batch runs.
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,6 +44,8 @@ pub struct Runtime {
     /// On the web, which has no threads, jobs run at once on the page's thread.
     #[cfg(target_arch = "wasm32")]
     memory: Rc<Memory>,
+    /// Each view's `Arc<ViewCopy<V>>`, by the view's `TypeId`, once something has read it.
+    copies: std::sync::Arc<Mutex<HashMap<TypeId, SendBox>>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -105,7 +111,7 @@ impl Runtime {
             })
             .expect("spawn the domain thread");
         match started.recv() {
-            Ok(ids) => Self { jobs, ids },
+            Ok(ids) => Self { jobs, ids, copies: Arc::default() },
             Err(_) => std::panic::resume_unwind(thread.join().expect_err("the thread stopped before it started")),
         }
     }
@@ -119,7 +125,7 @@ impl Runtime {
                 memory.run_due();
             }
         });
-        Self { memory }
+        Self { memory, copies: std::sync::Arc::default() }
     }
 
     /// Runs `job` on the runtime's thread, then calls `then` with what it returned, once what it
@@ -170,6 +176,20 @@ impl Runtime {
             let _ = answer.send(result);
         });
         answered.recv().unwrap_or_else(|_| Err("didn't run: the domain thread stopped".into()))
+    }
+
+    /// For clients: a copy of `V`'s states that the runtime's thread keeps current, read on any
+    /// thread without a job. `None` the first time, while a job makes it.
+    #[doc(hidden)]
+    pub fn states<V: Apply>(&self) -> Option<std::sync::Arc<ViewCopy<V>>> {
+        let id = TypeId::of::<V>();
+        if let Some(copy) = lock(&self.copies).get(&id) {
+            return copy.downcast_ref::<std::sync::Arc<ViewCopy<V>>>().cloned();
+        }
+        let copies = self.copies.clone();
+        // Not hosted: the job fails, and so does the read that follows it.
+        self.exec(move |memory| drop(lock(&copies).insert(id, Box::new(memory.view::<V>().host.copy()))), |_| {});
+        None
     }
 
     /// A command id no other command sent here has used, made without a job.

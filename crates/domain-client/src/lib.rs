@@ -302,6 +302,11 @@ impl<V: Apply + Validate> ClientView<V> {
     pub fn get(&self, key: &V::Key) -> Pending<Read<V>> {
         match &self.inner {
             ViewInner::Local { runtime, actor } => {
+                // From the copy the runtime's thread keeps, unless there isn't one yet or the
+                // view is behind: then in a job, which fails as the view does.
+                if let Some(state) = runtime.states::<V>().and_then(|states| states.get(key)) {
+                    return Pending::ready(checked::<V>(actor, key, state));
+                }
                 let (key, actor) = (key.clone(), actor.clone());
                 read::<V, _>(runtime, move |memory| checked::<V>(&actor, &key, memory.view::<V>().get(&key)))
             }

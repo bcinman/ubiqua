@@ -55,7 +55,7 @@ let me = client.acting_as(User("sam".into()));   // in process: who sends and re
 client.connection();                              // LiveView<Connection>: Connected, Reconnecting, ..
 ```
 
-Reads run there too, so a `get` resolves once the runtime reaches it, and a live view starts at `Ok(None)`, version 0, until the runtime has read the state now. [Policies](policies.md) and scheduled commands also run there, between commands.
+A `get` answers at once from a copy of the view's states that the runtime's thread keeps current, so it never waits behind commands. It can show a command whose batch is still being stored, as a prediction would. The first `get` of each view, and every other read, run on the runtime's thread. A live view starts at `Ok(None)`, version 0, until the runtime has read the state now. [Policies](policies.md) and scheduled commands also run there, between commands.
 
 On the web there are no threads, so jobs run at once, on the page's thread. See [Running a model](running.md#one-thread-changes-it).
 

@@ -91,7 +91,7 @@ fn a_risky_withdrawal_freezes_the_account_for_a_day() {
         .when(&a1(), WithdrawMoney { amount: 900 })
         .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
         .call(ScoreWithdrawal { account: a1(), amount: 900 })
-        .succeed(Risk(95))
+        .succeed(Risk(90))
         .then(&a1(), [AccountFrozen])
         .when(&a1(), WithdrawMoney { amount: 10 })
         .rejected(Frozen)
@@ -110,6 +110,36 @@ fn small_withdrawals_are_not_scored() {
         .then(&a1(), [MoneyWithdrawn { amount: SCORED_FROM - 1, balance_after: 1001 - SCORED_FROM }])
         .advance(FREEZE_FOR)
         .then_none(&a1());
+}
+
+#[test]
+fn a_withdrawal_of_the_scored_amount_is_scored_and_a_risk_below_90_changes_nothing() {
+    Story::new()
+        .policy(FraudReview)
+        .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
+        .when(&a1(), WithdrawMoney { amount: SCORED_FROM })
+        .then(&a1(), [MoneyWithdrawn { amount: SCORED_FROM, balance_after: 1000 - SCORED_FROM }])
+        .call(ScoreWithdrawal { account: a1(), amount: SCORED_FROM })
+        .succeed(Risk(89))
+        .advance(FREEZE_FOR)
+        .then_none(&a1());
+}
+
+#[test]
+fn freezing_and_thawing_record_nothing_when_they_no_longer_apply() {
+    Story::new()
+        .given(&a1(), (opened(), AccountFrozen))
+        .when(&a1(), FreezeAccount)
+        .then_none(&a1())
+        .when(&a1(), ThawAccount)
+        .then(&a1(), [AccountThawed])
+        .when(&a1(), ThawAccount)
+        .then_none(&a1());
+}
+
+#[test]
+fn a_refund_to_an_unopened_account_records_nothing() {
+    Story::new().when(&a1(), RefundMoney { amount: 30 }).replied(Balance { balance: 0 }).then_none(&a1());
 }
 
 #[test]

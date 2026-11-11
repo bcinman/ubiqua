@@ -80,6 +80,18 @@ fn only_the_owner_can_move_their_money() {
 }
 
 #[test]
+fn a_transfer_is_requested_once_even_after_it_ends() {
+    Story::new()
+        .given(&t1(), [requested(30)])
+        .when(&t1(), request(30))
+        .rejected(AlreadyRequested)
+        .given(&t1(), [TransferCompleted])
+        .when(&t1(), request(30))
+        .rejected(AlreadyRequested)
+        .then_none(&t1());
+}
+
+#[test]
 fn the_ledger_records_every_movement_once() {
     let store = LedgerStore::default();
     Story::new()

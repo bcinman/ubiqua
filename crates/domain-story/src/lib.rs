@@ -108,7 +108,10 @@ impl Story {
 
     /// Sends the commands after it on behalf of `actor`, as a signed-in user would. `decide`
     /// reads it with `cx.actor::<T>()`.
-    pub fn acting_as<T: std::any::Any + std::fmt::Debug + Send + Sync>(mut self, actor: T) -> Self {
+    pub fn acting_as<T: std::any::Any + std::fmt::Debug + domain::MaybeSend + domain::MaybeSync>(
+        mut self,
+        actor: T,
+    ) -> Self {
         self.actor = Some(CurrentActor::new(actor));
         self
     }
@@ -280,7 +283,10 @@ impl<C: Command> When<C> {
     }
 
     /// Sends the commands after it on behalf of `actor`, after checking this one was accounted for.
-    pub fn acting_as<T: std::any::Any + std::fmt::Debug + Send + Sync>(mut self, actor: T) -> Story {
+    pub fn acting_as<T: std::any::Any + std::fmt::Debug + domain::MaybeSend + domain::MaybeSync>(
+        mut self,
+        actor: T,
+    ) -> Story {
         self.finish();
         std::mem::take(&mut self.story).acting_as(actor)
     }

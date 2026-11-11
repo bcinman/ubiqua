@@ -73,7 +73,7 @@ pub enum NotifyInput {
 | `call(call).await` | ask an outside system |
 | `schedule(&id, cmd, at)` | send a command later |
 | `schedule_with_id(&id, cmd, at, "id")` / `unschedule(&id, "id")` | a schedule you can cancel |
-| `send_as(&actor, &id, cmd)` | send as someone, for a `decide` that checks [who is asking](sessions.md) |
+| `acting_as(user).send(&id, cmd)` | send as someone, for a `decide` that checks [who is asking](sessions.md) |
 | `start_saga(&key, saga)` / `signal::<S>(&key, "name", value)` | start a [saga](sagas.md) / signal one |
 
 ## Running twice is safe

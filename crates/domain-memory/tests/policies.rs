@@ -195,3 +195,71 @@ fn an_id_already_used_by_a_command_cant_be_scheduled() {
     ));
     assert_eq!(memory.unschedule(&c("a"), "done"), Err(UnscheduleError::AlreadyExecuted));
 }
+
+// Who signs a sheet: an app signs as its user, and `Countersign` signs a copy as the clerk.
+
+#[derive(Debug)]
+struct Name(&'static str);
+
+domain::id!(
+    pub struct SheetId;
+);
+
+#[domain::command(target = SheetId, events(Signed))]
+pub struct Sign;
+
+#[domain::event]
+pub struct Signed {
+    by: Option<String>,
+}
+
+#[derive(Aggregate)]
+#[aggregate(id = SheetId, state = (), events(Signed), commands(Sign))]
+pub struct Sheet;
+
+impl Evolve for Sheet {
+    fn evolve(_: &mut (), _: &SheetEvent) {}
+}
+
+impl Decide<Sign> for Sheet {
+    fn decide(_: &(), _: &Sign, cx: &Cx) -> Decision<Sign> {
+        Ok(vec![Signed { by: cx.actor::<Name>().map(|Name(name)| name.to_string()) }.into()])
+    }
+}
+
+#[derive(Policy)]
+#[policy(from(Sheet(Signed)))]
+pub struct Countersign;
+
+impl React for Countersign {
+    async fn react(&self, cx: &PolicyCx<Self>, input: CountersignInput) -> Result<(), PolicyError> {
+        let CountersignInput::Signed(signed) = input;
+        if signed.by.as_deref() != Some("clerk") {
+            let sheet = cx.source::<Sheet>().expect("from sheets");
+            cx.acting_as(Name("clerk")).send(&SheetId::new(format!("{sheet}-copy")), Sign)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_command_carries_who_sent_it() {
+    let memory = Arc::new(Memory::new().policy(Countersign));
+    memory.acting_as(Name("sam")).send(&SheetId::new("s-1"), Sign).unwrap();
+    memory.send(&SheetId::new("s-2"), Sign).unwrap();
+    memory.run_due();
+
+    let signers = |id: &str| -> Vec<Option<String>> {
+        memory
+            .events(&SheetId::new(id))
+            .into_iter()
+            .map(|e| match e.event {
+                SheetEvent::Signed(s) => s.by,
+            })
+            .collect()
+    };
+    assert_eq!(signers("s-1"), [Some("sam".to_string())]);
+    assert_eq!(signers("s-2"), [None]);
+    assert_eq!(signers("s-1-copy"), [Some("clerk".to_string())]);
+    assert_eq!(signers("s-1-copy-copy"), Vec::<Option<String>>::new());
+}

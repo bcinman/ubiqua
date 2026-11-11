@@ -5,12 +5,12 @@
 use crate::calls::{BoxFuture, unbox};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
-use crate::{AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, lock, reason};
+use crate::{Acting, AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, lock, reason};
 use domain::{
     AggregateId, Answered, Call, Command, CommandId, CurrentActor, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects,
     Policy, PolicySources, Reacts, Receipt, SendError, Source, SourcePayload, StreamId, Timestamp,
 };
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
@@ -118,19 +118,10 @@ impl<P: Policy> PolicyCx<P> {
         self.memory().send_with_id(id, command, self.next_command_id())
     }
 
-    /// Like [`send`](Self::send), on behalf of `actor`, for a command whose `decide` checks who
-    /// sent it. A policy has no actor otherwise.
-    pub fn send_as<C>(
-        &self,
-        actor: &CurrentActor,
-        id: &C::Target,
-        command: C,
-    ) -> Result<Receipt<C>, SendError<C::Rejection>>
-    where
-        C: Command,
-        AggregateOf<C::Target>: Handles<C>,
-    {
-        self.memory().send_as(Some(actor), id, command, self.next_command_id())
+    /// Sends the commands after it on behalf of `actor`, for a `decide` that checks who sent it.
+    /// A policy has no actor otherwise.
+    pub fn acting_as<T: Any + fmt::Debug + MaybeSend + MaybeSync>(&self, actor: T) -> Acting<'_, Self> {
+        Acting { host: self, actor: CurrentActor::new(actor) }
     }
 
     /// Sends `command` to `id` at `at`, under the next derived id. A second run after it fired
@@ -445,5 +436,16 @@ impl<P: Policy> PolicySources<P> for Routes<P> {
         P: Reacts<S>,
     {
         self.routes.insert(TypeId::of::<S>(), route_of::<P, S>);
+    }
+}
+
+impl<P: Policy> Acting<'_, PolicyCx<P>> {
+    /// [`PolicyCx::send`], on behalf of the actor.
+    pub fn send<C>(&self, id: &C::Target, command: C) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
+        self.host.memory().send_as(Some(&self.actor), id, command, self.host.next_command_id())
     }
 }

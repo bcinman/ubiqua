@@ -65,7 +65,7 @@ send ──▶ decide ──▶ commit ─────────────�
 ## Send as someone
 
 ```rust
-bank.send_as(Some(&CurrentActor::new(User("sam".into()))), &sam, WithdrawMoney { amount: 30 }, "req-2")?;
+bank.acting_as(User("sam".into())).send_with_id(&sam, WithdrawMoney { amount: 30 }, "req-2")?;
 ```
 
 `decide` reads it with `cx.actor::<User>()`. See [Who is asking](sessions.md).

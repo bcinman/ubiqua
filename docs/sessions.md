@@ -75,8 +75,10 @@ A view without `rejects(..)` lets everyone read it.
 | --- | --- |
 | A client connected to a [server](server.md) | what the server's session check returns for its token |
 | `Client::in_process(..).acting_as(User(..))` | that user |
+| `Memory::acting_as(User(..)).send(..)` | that user |
 | A story's `.acting_as(User(..))` | that user, for the commands after it |
-| A policy's `cx.send_as(&actor, ..)` | that actor |
+| A policy's `cx.acting_as(User(..)).send(..)` | that user |
+| A saga step's `.acting_as(User(..))` | that user |
 | Anything else | nobody: `None` |
 
 ## In a story

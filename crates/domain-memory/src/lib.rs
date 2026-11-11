@@ -24,6 +24,37 @@ pub use schedules::{ScheduleError, UnscheduleError};
 pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 pub use views::{Feed, Publisher, Recv, Subscription, ViewReader, Watch, channel};
 
+/// Sends commands on behalf of someone: from [`Memory::acting_as`] or [`PolicyCx::acting_as`].
+pub struct Acting<'a, H> {
+    host: &'a H,
+    actor: CurrentActor,
+}
+
+impl Acting<'_, Memory> {
+    /// [`Memory::send`], on behalf of the actor.
+    pub fn send<C>(&self, id: &C::Target, command: C) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
+        self.send_with_id(id, command, self.host.new_command_id())
+    }
+
+    /// [`Memory::send_with_id`], on behalf of the actor.
+    pub fn send_with_id<C>(
+        &self,
+        id: &C::Target,
+        command: C,
+        command_id: impl Into<CommandId>,
+    ) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
+        self.host.send_as(Some(&self.actor), id, command, command_id)
+    }
+}
+
 use domain::{
     Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles, Keyed,
     MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
@@ -259,8 +290,15 @@ impl Memory {
         self.send_as(None, id, command, command_id)
     }
 
-    /// Like [`send_with_id`](Self::send_with_id), on behalf of `actor`: `decide` reads it with
-    /// [`Cx::actor`]. A retry returns the first receipt, whoever sends it.
+    /// Sends the commands after it on behalf of `actor`, such as a signed-in `User`: `decide`
+    /// reads it with [`Cx::actor`].
+    pub fn acting_as<T: Any + std::fmt::Debug + MaybeSend + MaybeSync>(&self, actor: T) -> Acting<'_, Memory> {
+        Acting { host: self, actor: CurrentActor::new(actor) }
+    }
+
+    /// For hosts: [`send_with_id`](Self::send_with_id) on behalf of `actor`, or of nobody. A retry
+    /// returns the first receipt, whoever sends it. Apps use [`acting_as`](Self::acting_as).
+    #[doc(hidden)]
     pub fn send_as<C>(
         &self,
         actor: Option<&CurrentActor>,

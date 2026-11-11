@@ -14,8 +14,15 @@ mod view;
 #[doc(hidden)]
 pub mod compile_checks;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use serde;
+}
 
 pub use api::{Api, Reads, Sends, SentVia};
 pub use domain_macros::{Aggregate, Api, Command, Event, Model, Rejection, View};
@@ -27,7 +34,8 @@ pub use view::{
 };
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.
-pub trait Event: Clone + Debug + PartialEq + MaybeSend + MaybeSync + 'static {
+/// It's stored, so it also serializes.
+pub trait Event: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static {
     const NAME: &'static str;
 }
 
@@ -37,7 +45,7 @@ pub trait Rejection: Clone + Debug + PartialEq + Display + std::error::Error + M
 }
 
 /// A set of events, as an enum with one variant per event. The derives generate these.
-pub trait Events: Clone + Debug + PartialEq + MaybeSend + MaybeSync + 'static {
+pub trait Events: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static {
     /// The `Event::NAME` of the variant.
     fn name(&self) -> &'static str;
 }
@@ -58,7 +66,9 @@ pub trait Widen<E>: Events {
 
 /// The id of one aggregate instance. Each id type belongs to exactly one aggregate, so a command's
 /// target names the aggregate that decides it. `#[derive(Aggregate)]` implements it.
-pub trait AggregateId: Clone + Eq + Hash + Debug + Display + MaybeSend + MaybeSync + 'static {
+pub trait AggregateId:
+    Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
+{
     type Aggregate: Aggregate<Id = Self>;
 }
 
@@ -87,7 +97,8 @@ pub trait Command: Debug + MaybeSend + 'static {
     /// The reasons it may be refused.
     type Rejection: Rejections;
     /// What the caller gets back once its events commit.
-    type Reply: Clone + Debug + PartialEq + MaybeSend + MaybeSync + 'static;
+    /// Stored with the receipt, so a retry gets the same reply.
+    type Reply: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
 }
 
 /// What a [`Decide`] handler returns: the events to record, or why the command is refused.
@@ -178,6 +189,18 @@ macro_rules! id {
         impl ::std::convert::From<::std::string::String> for $name {
             fn from(id: ::std::string::String) -> Self {
                 Self(id)
+            }
+        }
+
+        impl $crate::__private::serde::Serialize for $name {
+            fn serialize<S: $crate::__private::serde::Serializer>(&self, s: S) -> ::std::result::Result<S::Ok, S::Error> {
+                s.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> $crate::__private::serde::Deserialize<'de> for $name {
+            fn deserialize<D: $crate::__private::serde::Deserializer<'de>>(d: D) -> ::std::result::Result<Self, D::Error> {
+                <::std::string::String as $crate::__private::serde::Deserialize<'de>>::deserialize(d).map(Self)
             }
         }
     };

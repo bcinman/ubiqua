@@ -1,8 +1,9 @@
 use crate::{Aggregate, Command};
 use std::fmt;
 
-/// Milliseconds since the Unix epoch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Milliseconds since the Unix epoch. Serializes as that number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct Timestamp(u64);
 
 impl Timestamp {
@@ -69,6 +70,18 @@ impl StreamId {
     }
 
     pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for StreamId {
+    fn from(stream: String) -> Self {
+        Self(stream)
+    }
+}
+
+impl std::borrow::Borrow<str> for StreamId {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }

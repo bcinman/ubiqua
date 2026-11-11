@@ -2,6 +2,7 @@ use domain::{
     Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, KeyOf, Model, Origin, View, ViewCx,
 };
 use domain_memory::Memory;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,19 +33,19 @@ struct Move {
 #[command(target = AccountId, events(Closed))]
 struct Close;
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Opened {
     owner: String,
 }
 
 /// Carries no owner: a view keyed by owner must find it in the summary's state.
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Moved {
     amount: i64,
     balance_after: i64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Closed;
 
 #[derive(Aggregate)]
@@ -85,7 +86,7 @@ impl Decide<Close> for Account {
 #[view(key = AccountId, from(Account(Opened, Moved, Closed)), state = Summary)]
 struct AccountSummary;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Summary {
     owner: Option<String>,
     balance: i64,
@@ -107,7 +108,7 @@ impl Apply for AccountSummary {
 #[view(key = OwnerId, from(AccountSummary(Opened, Moved, Closed)), key_of(AccountSummary), state = Dashboard)]
 struct OwnerDashboard;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Dashboard {
     balances: BTreeMap<String, i64>,
 }
@@ -135,7 +136,7 @@ impl Apply for OwnerDashboard {
 #[view(key = Everyone, from(OwnerDashboard(Opened, Moved, Closed)), key_of(OwnerDashboard), state = Totals)]
 struct Leaderboard;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Totals {
     by_owner: BTreeMap<String, i64>,
 }

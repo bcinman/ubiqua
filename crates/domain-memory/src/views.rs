@@ -1,13 +1,14 @@
 //! Hosting views: each view has an inbox of deliveries, applied in order, and a store per key.
 //! A view's emitted entries are delivered to the views that read it, the same way.
 
-use crate::lock;
+use crate::store::{EntryRow, KeyRow, Store, ViewRows};
+use crate::{json, lock};
 use domain::{
     Apply, Consumes, Cursor, Entry, Frame, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source,
     SourcePayload, StreamId, Timestamp, View, ViewCx,
 };
 use std::any::{Any, TypeId};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
@@ -102,12 +103,27 @@ pub(crate) struct ViewHost<V: Apply> {
     downstream: Mutex<Vec<Arc<dyn Consumer>>>,
     inbox: Mutex<VecDeque<Arc<Delivery>>>,
     data: Mutex<Data<V>>,
+    store: Option<Arc<dyn Store>>,
 }
 
 struct Data<V: Apply> {
     keys: HashMap<V::Key, Key<V>>,
     /// The last seq applied from each source stream, whether or not the view read it.
     progress: HashMap<StreamId, u64>,
+    /// Changes the store doesn't have yet. Only kept when there's a store.
+    unsaved: Unsaved<V>,
+}
+
+struct Unsaved<V: Apply> {
+    keys: HashSet<V::Key>,
+    entries: Vec<(V::Key, Entry<V>)>,
+    progress: HashSet<StreamId>,
+}
+
+impl<V: Apply> Default for Unsaved<V> {
+    fn default() -> Self {
+        Self { keys: HashSet::new(), entries: Vec::new(), progress: HashSet::new() }
+    }
 }
 
 struct Key<V: Apply> {
@@ -130,13 +146,91 @@ impl<V: Apply> Key<V> {
 }
 
 impl<V: Apply> ViewHost<V> {
-    pub fn new() -> Self {
+    pub fn new(store: Option<Arc<dyn Store>>) -> Self {
         Self {
             routes: HashMap::new(),
             upstream: Vec::new(),
             downstream: Mutex::default(),
             inbox: Mutex::default(),
-            data: Mutex::new(Data { keys: HashMap::new(), progress: HashMap::new() }),
+            data: Mutex::new(Data { keys: HashMap::new(), progress: HashMap::new(), unsaved: Unsaved::default() }),
+            store,
+        }
+    }
+
+    /// Takes in what the store holds for this view.
+    ///
+    /// # Panics
+    /// When something stored doesn't decode, which means the view changed without a new version.
+    pub fn load(&mut self, rows: ViewRows) {
+        fn decode<V: View, T: serde::de::DeserializeOwned>(what: &str, text: &str) -> T {
+            serde_json::from_str(text).unwrap_or_else(|e| {
+                panic!("{}'s stored {what} doesn't decode ({e}); change its version to rebuild it", V::NAME)
+            })
+        }
+        let data = self.data.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for row in rows.keys {
+            let key: V::Key = decode::<V, _>("key", &row.key);
+            data.keys.entry(key).or_default().state = Some(Arc::new(decode::<V, _>("state", &row.state)));
+        }
+        let mut entries = rows.entries;
+        entries.sort_by_key(|row| row.cursor);
+        for row in entries {
+            let key: V::Key = decode::<V, _>("key", &row.key);
+            let entry = Entry {
+                cursor: Cursor::new(row.cursor),
+                event: decode::<V, _>("event", &row.event),
+                state: Arc::new(decode::<V, _>("state", &row.state)),
+                stream: StreamId::from(row.stream),
+                seq: row.seq,
+                at: Timestamp::from_millis(row.at),
+            };
+            data.keys.entry(key).or_default().entries.push(entry);
+        }
+        data.progress.extend(rows.progress.into_iter().map(|(stream, seq)| (StreamId::from(stream), seq)));
+    }
+
+    /// How far the view has applied each source stream.
+    pub fn progress(&self) -> HashMap<StreamId, u64> {
+        lock(&self.data).progress.clone()
+    }
+
+    /// Writes the unsaved changes. If the store fails they stay unsaved and go with the next save;
+    /// a restart before then applies them again from the stored events.
+    fn save(&self, data: &mut Data<V>) {
+        let Some(store) = &self.store else { return };
+        let unsaved = &data.unsaved;
+        if unsaved.keys.is_empty() && unsaved.progress.is_empty() {
+            return;
+        }
+        fn encode<V: View, T: serde::Serialize + ?Sized>(value: &T) -> String {
+            json(value).unwrap_or_else(|e| panic!("saving {}: {e}", V::NAME))
+        }
+        let rows = ViewRows {
+            keys: unsaved
+                .keys
+                .iter()
+                .map(|key| {
+                    let state = data.keys[key].state.as_deref().expect("an applied key has a state");
+                    KeyRow { key: encode::<V, _>(key), state: encode::<V, _>(state) }
+                })
+                .collect(),
+            entries: unsaved
+                .entries
+                .iter()
+                .map(|(key, entry)| EntryRow {
+                    key: encode::<V, _>(key),
+                    cursor: entry.cursor.seq(),
+                    event: encode::<V, _>(&entry.event),
+                    state: encode::<V, _>(&*entry.state),
+                    stream: entry.stream.to_string(),
+                    seq: entry.seq,
+                    at: entry.at.as_millis(),
+                })
+                .collect(),
+            progress: unsaved.progress.iter().map(|stream| (stream.to_string(), data.progress[stream])).collect(),
+        };
+        if store.save_view(V::NAME, &rows).is_ok() {
+            data.unsaved = Unsaved::default();
         }
     }
 
@@ -189,14 +283,23 @@ impl<V: Apply> ViewHost<V> {
                     at: delivery.at,
                 };
                 k.entries.push(entry.clone());
+                if self.store.is_some() {
+                    data.unsaved.entries.push((key.clone(), entry.clone()));
+                }
                 publish(&mut k.feeds, Frame::Entry(entry), wakeups);
             }
             if changed {
                 let snapshot = k.snapshot();
                 publish(&mut k.watches, snapshot, wakeups);
             }
+            if self.store.is_some() {
+                data.unsaved.keys.insert(key);
+            }
         }
         data.progress.insert(delivery.stream.clone(), delivery.seq);
+        if self.store.is_some() {
+            data.unsaved.progress.insert(delivery.stream.clone());
+        }
     }
 
     fn read<T>(&self, f: impl FnOnce(&mut Data<V>) -> T) -> T {
@@ -221,6 +324,7 @@ impl<V: Apply> Consumer for ViewHost<V> {
                 self.apply_one(&mut data, &delivery, &mut wakeups);
                 lock(&self.inbox).pop_front();
             }
+            self.save(&mut data);
         }
         // Subscribers run outside the lock, so they may read this view or send commands.
         wakeups.into_iter().for_each(Wakeup::wake);

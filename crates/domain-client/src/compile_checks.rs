@@ -9,7 +9,7 @@
 //! # domain::id!(pub struct DoorId;);
 //! # #[derive(Command, Debug)] #[command(target = DoorId, events(Moved))] pub struct Open;
 //! # #[derive(Command, Debug)] #[command(target = DoorId, events(Moved))] pub struct Close;
-//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Moved;
+//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Moved;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Moved), commands(Open, Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
 //! # impl Decide<Open> for Door { fn decide(_: &(), _: &Open, _: &Cx) -> Decision<Open> { Ok(vec![]) } fn reply(_: &()) {} }

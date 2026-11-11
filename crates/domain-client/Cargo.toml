@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 domain.workspace = true
 domain-memory.workspace = true
+
+[dev-dependencies]
+serde.workspace = true

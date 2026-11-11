@@ -1,5 +1,6 @@
 use crate::*;
 use domain::{Apply, Event, KeyOf, Origin, View, ViewCx};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Who owns an account and what's in it.
@@ -7,7 +8,7 @@ use std::collections::BTreeMap;
 #[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
 pub struct AccountSummary;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub owner: Option<String>,
     pub balance: u64,
@@ -33,7 +34,7 @@ impl Apply for AccountSummary {
 )]
 pub struct OwnerHoldings;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Holdings {
     pub balances: BTreeMap<AccountId, u64>,
 }
@@ -63,14 +64,14 @@ impl Apply for OwnerHoldings {
 #[view(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)), events(StatementLine))]
 pub struct Statement;
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatementLine {
     pub kind: LineKind,
     pub amount: u64,
     pub balance: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LineKind {
     Deposit,
     Withdrawal,

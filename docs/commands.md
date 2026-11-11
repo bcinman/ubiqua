@@ -41,7 +41,7 @@ MoneyWithdrawn { amount: 30, balance_after: 70 }    // what the account decided
 ## An event
 
 ```rust
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoneyWithdrawn {
     pub amount: u64,
     pub balance_after: u64,
@@ -50,7 +50,7 @@ pub struct MoneyWithdrawn {
 assert_eq!(<MoneyWithdrawn as Event>::NAME, "MoneyWithdrawn");
 ```
 
-Name events in the past tense. They're facts: `evolve` must accept them.
+Name events in the past tense. They're facts: `evolve` must accept them. They're stored as JSON, `{"MoneyWithdrawn": {"amount": 30, "balance_after": 70}}`, and kept forever, so a new field needs `#[serde(default)]`.
 
 ## A rejection
 

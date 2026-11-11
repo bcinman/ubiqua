@@ -106,6 +106,7 @@ impl<C: Command> When<C> {
     pub fn then<I, E>(mut self, id: &I, expected: impl IntoIterator<Item = E>) -> Self
     where
         I: AggregateId,
+        AggregateOf<I>: Evolve,
         E: Into<EventOf<I>>,
     {
         let stream = StreamId::of::<AggregateOf<I>>(id);
@@ -118,7 +119,10 @@ impl<C: Command> When<C> {
     }
 
     /// Checks that no events were recorded on `id` since the last check.
-    pub fn then_none<I: AggregateId>(self, id: &I) -> Self {
+    pub fn then_none<I: AggregateId>(self, id: &I) -> Self
+    where
+        AggregateOf<I>: Evolve,
+    {
         self.then(id, Vec::<EventOf<I>>::new())
     }
 

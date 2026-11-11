@@ -1,6 +1,8 @@
 //! Views: read models folded from events, and the read protocol hosts serve them with.
 
 use crate::{Command, Events, Evolve, MaybeSend, MaybeSync, Receipt, StreamId, Timestamp};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::any::Any;
 use std::fmt::{self, Debug, Display};
 use std::hash::Hash;
@@ -36,10 +38,13 @@ pub struct Origin<'a, S: Source> {
 /// Derive it with `#[derive(View)]`, then implement [`Apply`].
 pub trait View: Sized + MaybeSend + MaybeSync + 'static {
     const NAME: &'static str;
+    /// Change it whenever you change what the view computes, so a stored view is rebuilt from the
+    /// events, along with every view that reads it. `#[view(version = 1)]` sets it.
+    const VERSION: u64 = 0;
     /// What one instance of the view is about, such as one account.
-    type Key: Clone + Eq + Hash + Debug + Display + MaybeSend + MaybeSync + 'static;
+    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
     /// `Default` is the state before the key's first event.
-    type State: Clone + Debug + Default + PartialEq + MaybeSend + MaybeSync + 'static;
+    type State: Clone + Debug + Default + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
     /// The events the view reads, as an enum. The derive generates it.
     type Input: Events;
     /// The events the view emits. Without `events(..)`, every input it applies.

@@ -1,0 +1,14 @@
+[package]
+name = "domain-sqlite"
+description = "Keeps a domain model in a SQLite file, so an app's data outlives it."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain-memory.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+domain.workspace = true
+serde.workspace = true

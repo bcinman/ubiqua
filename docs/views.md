@@ -15,7 +15,7 @@ Account a-2 ──events──▶ AccountSummary a-2 ──┘
 #[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
 pub struct AccountSummary;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub owner: Option<String>,
     pub balance: u64,
@@ -37,6 +37,7 @@ impl Apply for AccountSummary {
 | `key = AccountId` | one state per account |
 | `from(Account(..))` | the source aggregate, and the events read from it |
 | `state = Summary` | `Default` is the state before the first event; omit for `()` |
+| `version = 1` | see [Change a view](#change-a-view); omit for `0` |
 
 The derive generates `AccountSummaryInput`, an enum of exactly the events listed. Other events pass by.
 
@@ -198,6 +199,29 @@ let frame = feed.recv().await;                   // on any executor
 ```
 
 Dropping a feed unsubscribes.
+
+## Change a view
+
+A stored view keeps its state between runs. When you change what it computes (its `apply`, `key_of`, state, or the events it reads), change its version:
+
+```rust
+#[view(key = AccountId, from(Account(..)), state = Summary, version = 1)]
+pub struct AccountSummary;
+```
+
+On the next start it's rebuilt from the events, and so is every view that reads it:
+
+```text
+AccountSummary  stored at 0, now 1   rebuilt
+OwnerHoldings   reads AccountSummary rebuilt
+Statement       unchanged            loaded, then applies what it missed
+```
+
+Without a new version, the old state stays. If it no longer decodes, startup stops:
+
+```text
+AccountSummary's stored state doesn't decode (missing field `currency` ..); change its version to rebuild it
+```
 
 ## Test it
 

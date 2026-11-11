@@ -3,6 +3,7 @@ use domain::{
 };
 use domain_client::{Client, LiveView, Pending, ReadError};
 use domain_memory::Memory;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::task::{Context, Poll, Wake, Waker};
@@ -21,7 +22,7 @@ struct Add {
     n: i64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Added {
     n: i64,
     total: i64,
@@ -59,7 +60,7 @@ impl Decide<Add> for Counter {
 #[command(target = OtherId, events(Pinged))]
 struct Ping;
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Pinged;
 
 #[derive(Aggregate)]

@@ -33,9 +33,10 @@ command ──▶ aggregate ──▶ events ──▶ views
 3. [Aggregates](aggregates.md): state, `evolve`, `decide`, `reply`.
 4. [Views](views.md): read models, live feeds, reading your own write.
 5. [Running a model](running.md): `Memory`, retries, threads, the web.
-6. [The client](client.md): what an app uses: send, read, follow live, with any UI.
-7. [Stories](stories.md): test rules as given, when, then.
-8. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+6. [Keep it on disk](storage.md): SQLite, restarts, changing a view.
+7. [The client](client.md): what an app uses: send, read, follow live, with any UI.
+8. [Stories](stories.md): test rules as given, when, then.
+9. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
 
 ## Crates
 
@@ -43,11 +44,12 @@ command ──▶ aggregate ──▶ events ──▶ views
 | --- | --- |
 | `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
 | `domain-memory` | `Memory`: runs a model and its views in memory. |
+| `domain-sqlite` | `Sqlite`: keeps a `Memory` in a file. |
 | `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses. |
 | `domain-story` | `Story`: given, when, then. |
 
-No UI framework and no async runtime. Everything builds for `wasm32-unknown-unknown`.
+No UI framework and no async runtime. Everything except `domain-sqlite` builds for `wasm32-unknown-unknown`.
 
 ## Not yet
 
-Persistence and view versioning, a server and a client that talks to it, policies, projections, sagas. See the design sketch's build order.
+A server and a client that talks to it, policies, projections, sagas. See the design sketch's build order.

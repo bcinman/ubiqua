@@ -1,5 +1,6 @@
 use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Rejection, SendError};
 use domain_memory::Memory;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 domain::id!(
@@ -16,7 +17,7 @@ struct IncrementBelow {
     limit: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Incremented {
     value_after: u64,
 }

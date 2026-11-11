@@ -183,7 +183,7 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..))]`
+/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..), version = N)]`
 ///
 /// Generates `<Name>Input` (the events it reads), `<Name>Event` when `events(..)` is given,
 /// `impl View`, and `impl Consumes` per source. `state` defaults to `()`. A source listed in
@@ -234,6 +234,7 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
 fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());
+    let mut version = None;
     parse_attr(input, "view", |meta| {
         if meta.path.is_ident("key") {
             key = Some(meta.value()?.parse::<Type>()?);
@@ -252,8 +253,10 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             events = Some(paths(&meta)?);
         } else if meta.path.is_ident("key_of") {
             key_of = paths(&meta)?;
+        } else if meta.path.is_ident("version") {
+            version = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse::<u64>()?);
         } else {
-            return Err(meta.error("expected `key`, `from`, `state`, `events` or `key_of`"));
+            return Err(meta.error("expected `key`, `from`, `state`, `events`, `key_of` or `version`"));
         }
         Ok(())
     })?;
@@ -271,6 +274,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     }
     let state = state.map_or_else(|| quote!(()), |t| quote!(#t));
     let tag = name.to_string();
+    let version = version.map(|v| quote!(const VERSION: u64 = #v;));
 
     // Every event the view reads, once each, in the order first listed.
     let mut reads: Vec<Path> = Vec::new();
@@ -335,6 +339,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
 
         impl ::domain::View for #name {
             const NAME: &'static str = #tag;
+            #version
             type Key = #key;
             type State = #state;
             type Input = #input_enum;
@@ -433,9 +438,18 @@ fn union(vis: &Visibility, name: &Ident, members: &[Path], doc: &str, kind: Kind
             impl ::std::error::Error for #name {}
         },
     };
+    // Event sets are stored, so they serialize: `{"MoneyDeposited": {..}}`.
+    let serde = match kind {
+        Kind::Events => quote! {
+            #[derive(::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
+            #[serde(crate = "::domain::__private::serde")]
+        },
+        Kind::Rejections => quote!(),
+    };
     quote! {
         #[doc = #doc]
         #[derive(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq)]
+        #serde
         #vis enum #name {
             #( #variants(#members), )*
         }

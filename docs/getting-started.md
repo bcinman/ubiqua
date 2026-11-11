@@ -12,7 +12,10 @@ cargo test -p bank
 ```toml
 [dependencies]
 domain = { path = "../../crates/domain" }
+domain-client = { path = "../../crates/domain-client" }
 domain-memory = { path = "../../crates/domain-memory" }
+domain-sqlite = { path = "../../crates/domain-sqlite" }
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 domain-story = { path = "../../crates/domain-story" }
@@ -35,7 +38,7 @@ pub struct WithdrawMoney {
     pub amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoneyWithdrawn {
     pub amount: u64,
     pub balance_after: u64,
@@ -47,6 +50,8 @@ pub struct InsufficientFunds {
     pub requested: u64,
 }
 ```
+
+Events are stored, so they derive `Serialize` and `Deserialize`. So do replies and view state.
 
 `OpenAccount` and `DepositMoney` follow the same shape: see [`commands.rs`](../examples/bank/src/commands.rs).
 
@@ -99,15 +104,16 @@ println!("balance {}", receipt.reply.balance);
 
 ```text
 $ cargo run -p bank
-deposited 100, balance 100
-withdrew 30, balance 70
+showing: None
+redraw #1: Some(Summary { owner: Some("sam"), balance: 0 })
+redraw #2: Some(Summary { owner: Some("sam"), balance: 100 })
+redraw #3: Some(Summary { owner: Some("sam"), balance: 70 })
 withdraw 500: rejected: InsufficientFunds { balance: 70, requested: 500 }
-summary: Summary { owner: Some("sam"), balance: 70 }
-sam holds 570 across {AccountId("sam-main"): 70, AccountId("sam-savings"): 500}
-statement caught up at 0
 statement #1: StatementLine(StatementLine { kind: Deposit, amount: 100, balance: 100 })
 statement #2: StatementLine(StatementLine { kind: Withdrawal, amount: 30, balance: 70 })
 ```
+
+The example sends through a [client](client.md), as an app would. `cargo run -p bank -- bank.db` [keeps it on disk](storage.md).
 
 ## 6. Add a view
 

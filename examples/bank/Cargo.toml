@@ -9,6 +9,11 @@ publish.workspace = true
 domain.workspace = true
 domain-client.workspace = true
 domain-memory.workspace = true
+serde.workspace = true
+
+# The binary keeps the bank in a file; the library also builds for the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+domain-sqlite.workspace = true
 
 [dev-dependencies]
 domain-story.workspace = true

@@ -101,6 +101,14 @@ for _ in 0..8 {
 
 Commands to one instance queue. Commands to different instances run in parallel.
 
+## Keep it on disk
+
+```rust
+let bank = Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>();
+```
+
+See [Keep it on disk](storage.md).
+
 ## Set the clock
 
 ```rust
@@ -123,4 +131,4 @@ There's no system clock there, so use `Memory::with_clock`. And state there does
 
 That's `MaybeSend` and `MaybeSync`: `Send` and `Sync` natively, nothing on wasm. Bound on them in code meant for both.
 
-Next: [The client](client.md).
+Next: [Keep it on disk](storage.md).

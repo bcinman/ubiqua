@@ -1,5 +1,6 @@
 use crate::AccountId;
 use domain::{Command, Event, Rejection};
+use serde::{Deserialize, Serialize};
 
 // Open an account.
 
@@ -9,7 +10,7 @@ pub struct OpenAccount {
     pub owner: String,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountOpened {
     pub owner: String,
 }
@@ -25,7 +26,7 @@ pub struct DepositMoney {
     pub amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoneyDeposited {
     pub amount: u64,
     pub balance_after: u64,
@@ -39,7 +40,7 @@ pub struct WithdrawMoney {
     pub amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoneyWithdrawn {
     pub amount: u64,
     pub balance_after: u64,
@@ -56,7 +57,7 @@ pub struct InsufficientFunds {
 #[derive(Rejection, Clone, Debug, PartialEq)]
 pub struct NotOpen;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Balance {
     pub balance: u64,
 }

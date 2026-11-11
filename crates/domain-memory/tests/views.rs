@@ -3,6 +3,7 @@ use domain::{
     View, ViewCx,
 };
 use domain_memory::Memory;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -31,14 +32,14 @@ struct Credit {
 #[command(target = WalletId, events(Noted))]
 struct Note;
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Credited {
     owner: String,
     amount: u64,
     total_after: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Noted;
 
 #[derive(Aggregate)]
@@ -73,7 +74,7 @@ struct Join {
     member: String,
 }
 
-#[derive(Event, Clone, Debug, PartialEq)]
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Joined {
     member: String,
 }
@@ -110,7 +111,7 @@ impl Apply for Totals {
 #[view(key = OwnerId, from(Wallet(Credited), Club(Joined)), key_of(Wallet, Club), state = Activity)]
 struct PerOwner;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Activity {
     credited: u64,
     log: Vec<String>,

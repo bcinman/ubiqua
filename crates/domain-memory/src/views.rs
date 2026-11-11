@@ -2,8 +2,10 @@
 //! A view's emitted entries are delivered to the views that read it, the same way.
 
 use crate::store::{EntryRow, KeyRow, Store, ViewRows};
+use crate::telemetry::{Hub, value};
 use crate::{json, lock};
 use domain::host::{Consumes, Keyed, SourcePayload};
+use domain::telemetry::{self, Emitted, Trace, ViewKey, ViewTrace};
 use domain::{
     Apply, Cursor, Entry, Frame, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source, StreamId, Timestamp,
     View, ViewCx,
@@ -28,13 +30,13 @@ type Notify = Arc<dyn Fn() + Send + Sync>;
 type Notify = Arc<dyn Fn()>;
 
 /// A subscriber to tell about new items, once the view's lock is released.
-enum Wakeup {
+pub(crate) enum Wakeup {
     Waker(Waker),
     Notify(Notify),
 }
 
 impl Wakeup {
-    fn wake(self) {
+    pub(crate) fn wake(self) {
         match self {
             Wakeup::Waker(waker) => waker.wake(),
             Wakeup::Notify(notify) => notify(),
@@ -108,6 +110,7 @@ pub(crate) struct ViewHost<V: Apply> {
     inbox: Mutex<VecDeque<Arc<Delivery>>>,
     data: Mutex<Data<V>>,
     store: Option<Arc<dyn Store>>,
+    hub: Arc<Hub>,
 }
 
 struct Data<V: Apply> {
@@ -150,7 +153,7 @@ impl<V: Apply> Key<V> {
 }
 
 impl<V: Apply> ViewHost<V> {
-    pub fn new(store: Option<Arc<dyn Store>>) -> Self {
+    pub fn new(store: Option<Arc<dyn Store>>, hub: Arc<Hub>) -> Self {
         Self {
             routes: HashMap::new(),
             upstream: Vec::new(),
@@ -158,6 +161,7 @@ impl<V: Apply> ViewHost<V> {
             inbox: Mutex::default(),
             data: Mutex::new(Data { keys: HashMap::new(), progress: HashMap::new(), unsaved: Unsaved::default() }),
             store,
+            hub,
         }
     }
 
@@ -270,6 +274,20 @@ impl<V: Apply> ViewHost<V> {
             let downstream = lock(&self.downstream);
             let k = data.keys.entry(key.clone()).or_default();
             k.state = Some(state.clone());
+            let traced = (changed || !emitted.is_empty()) && self.hub.observed();
+            let trace = traced.then(|| {
+                let first = k.entries.len() as u64 + 1;
+                let emitted = emitted.iter().enumerate();
+                ViewTrace {
+                    view: V::NAME.into(),
+                    key: value(&key),
+                    stream: stream.to_string(),
+                    state: value(&*state),
+                    emitted: emitted.map(|(i, e)| Emitted { cursor: first + i as u64, event: value(e) }).collect(),
+                    cause: telemetry::Position { stream: delivery.stream.to_string(), seq: delivery.seq },
+                    at: delivery.at.as_millis(),
+                }
+            });
             for event in emitted {
                 let cursor = Cursor::new(k.entries.len() as u64 + 1);
                 if !downstream.is_empty() {
@@ -296,6 +314,9 @@ impl<V: Apply> ViewHost<V> {
                 let snapshot = k.snapshot();
                 publish(&mut k.watches, snapshot, wakeups);
             }
+            if let Some(trace) = trace {
+                self.hub.publish(&[Trace::View(trace)]);
+            }
             if self.store.is_some() {
                 data.unsaved.keys.insert(key);
             }
@@ -309,6 +330,22 @@ impl<V: Apply> ViewHost<V> {
     fn read<T>(&self, f: impl FnOnce(&mut Data<V>) -> T) -> T {
         self.catch_up();
         f(&mut lock(&self.data))
+    }
+
+    /// Every key with a state, by stream.
+    pub(crate) fn keys(&self) -> Vec<ViewKey> {
+        let mut keys: Vec<ViewKey> = self.read(|data| {
+            data.keys
+                .iter()
+                .filter_map(|(key, k)| {
+                    let state = k.state.as_deref()?;
+                    let stream = StreamId::new(V::NAME, key).to_string();
+                    Some(ViewKey { key: value(key), stream, state: value(state), cursor: k.entries.len() as u64 })
+                })
+                .collect()
+        });
+        keys.sort_by(|a, b| a.stream.cmp(&b.stream));
+        keys
     }
 }
 
@@ -332,6 +369,7 @@ impl<V: Apply> Consumer for ViewHost<V> {
         }
         // Subscribers run outside the lock, so they may read this view or send commands.
         wakeups.into_iter().for_each(Wakeup::wake);
+        self.hub.flush();
         let downstream = lock(&self.downstream).clone();
         downstream.iter().for_each(|consumer| consumer.drain());
     }
@@ -451,9 +489,9 @@ pub type Watch<V> = Subscription<Snapshot<V>>;
 /// Items arriving from a view. Read them each frame with `try_next`, or `.recv().await` them on
 /// any executor. Dropping it unsubscribes.
 pub struct Subscription<T> {
-    queue: Arc<Queue<T>>,
+    pub(crate) queue: Arc<Queue<T>>,
     /// Dropped with the subscription, such as to tell a server to stop sending.
-    _guard: Option<AnyBox>,
+    pub(crate) _guard: Option<AnyBox>,
 }
 
 /// A subscription you fill yourself, for items that arrive from elsewhere, such as a server.
@@ -539,14 +577,14 @@ impl<T> Future for Recv<'_, T> {
     }
 }
 
-struct Queue<T> {
-    inner: Mutex<QueueInner<T>>,
+pub(crate) struct Queue<T> {
+    pub(crate) inner: Mutex<QueueInner<T>>,
 }
 
-struct QueueInner<T> {
-    items: VecDeque<T>,
-    waker: Option<Waker>,
-    notify: Option<Notify>,
+pub(crate) struct QueueInner<T> {
+    pub(crate) items: VecDeque<T>,
+    pub(crate) waker: Option<Waker>,
+    pub(crate) notify: Option<Notify>,
 }
 
 impl<T> Default for Queue<T> {

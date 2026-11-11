@@ -14,6 +14,7 @@ mod projections;
 mod sagas;
 mod schedules;
 pub mod store;
+mod telemetry;
 mod views;
 
 pub use calls::StubbedCall;
@@ -23,6 +24,7 @@ pub use sagas::{Run, SagaCx, SagaStatus, Settle, Signal, SignalError, Step};
 pub use schedules::{ScheduleError, UnscheduleError};
 use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
 pub use store::{Store, StoreError};
+pub use telemetry::{Telemetry, TraceFeed};
 pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
 #[doc(hidden)]
 pub use views::{Publisher, channel};
@@ -72,6 +74,7 @@ use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use telemetry::{Hub, Traced};
 use views::{AnyBox, Consumer, Delivery, ViewHost};
 
 /// Called when there's work for `Memory::run_due`.
@@ -122,6 +125,15 @@ pub struct Memory {
     /// `run_due` is running, and whether it should look again before it stops.
     running: AtomicBool,
     again: AtomicBool,
+    /// Hands what happens to telemetry observers.
+    hub: Arc<Hub>,
+    /// What telemetry shows of the model: its parts, the names of its sources, how to read each
+    /// aggregate and view, and how to host its views again for a replay.
+    parts: Vec<domain::telemetry::Part>,
+    names: HashMap<TypeId, &'static str>,
+    traced: HashMap<TypeId, Traced>,
+    view_keys: HashMap<&'static str, fn(&Memory) -> Vec<domain::telemetry::ViewKey>>,
+    replay_views: Vec<fn(&mut Memory)>,
 }
 
 trait Clock: Fn() -> Timestamp + MaybeSend + MaybeSync {}
@@ -164,6 +176,12 @@ impl Memory {
             hooks: Mutex::default(),
             running: AtomicBool::new(false),
             again: AtomicBool::new(false),
+            hub: Arc::default(),
+            parts: Vec::new(),
+            names: HashMap::new(),
+            traced: HashMap::new(),
+            view_keys: HashMap::new(),
+            replay_views: Vec::new(),
         }
     }
 
@@ -328,9 +346,12 @@ impl Memory {
     {
         let command_id = command_id.into();
         let stream = StreamId::of::<AggregateOf<C::Target>>(id);
-        let receipt = self.send_locked(actor, id, command, command_id, stream)?;
-        self.deliver::<AggregateOf<C::Target>>();
-        Ok(receipt)
+        let receipt = self.send_locked(actor, id, command, command_id, stream);
+        if receipt.is_ok() {
+            self.deliver::<AggregateOf<C::Target>>();
+        }
+        self.hub.flush();
+        receipt
     }
 
     fn send_locked<C>(
@@ -362,8 +383,28 @@ impl Memory {
 
         let at = (self.clock)();
         let cx = Cx::new(at, command_id.clone()).with_actor(actor.cloned());
-        let events = <AggregateOf<C::Target> as domain::Decide<C>>::decide(&instance.state, &command, &cx)
-            .map_err(SendError::Rejected)?;
+        let decided = <AggregateOf<C::Target> as domain::Decide<C>>::decide(&instance.state, &command, &cx);
+        let trace = |outcome| {
+            domain::telemetry::Trace::Command(domain::telemetry::CommandTrace {
+                command: C::NAME.into(),
+                stream: stream.to_string(),
+                command_id: command_id.to_string(),
+                actor: actor.map(|actor| format!("{actor:?}")),
+                input: telemetry::value(&command),
+                at: at.as_millis(),
+                outcome,
+            })
+        };
+        let events = match decided {
+            Ok(events) => events,
+            Err(rejection) => {
+                if self.hub.observed() {
+                    let outcome = domain::telemetry::Outcome::Rejected(telemetry::value(&rejection));
+                    self.hub.publish(&[trace(outcome)]);
+                }
+                return Err(SendError::Rejected(rejection));
+            }
+        };
 
         // Work on a copy, so a panic in evolve or reply leaves the instance as it was.
         let mut state = instance.state.clone();
@@ -377,6 +418,7 @@ impl Memory {
         }
         let reply = <AggregateOf<C::Target> as Handles<C>>::reply(&state);
         let version = instance.events.len() as u64 + recorded.len() as u64;
+        let committed = self.hub.observed().then(|| trace(domain::telemetry::Outcome::Committed { version }));
         let receipt = Receipt { stream, version, command_id: command_id.clone(), events, reply };
 
         if self.store.is_some() {
@@ -386,6 +428,9 @@ impl Memory {
                 receipt: encode_receipt(&receipt)?,
             };
             self.persist::<AggregateOf<C::Target>>(id, &recorded, Some(row)).map_err(unavailable)?;
+        }
+        if let Some(committed) = committed {
+            self.hub.publish(&[committed]);
         }
         instance.receipts.insert(command_id, Box::new(receipt.clone()));
         self.commit(id, &mut instance, state, recorded, false);
@@ -475,6 +520,13 @@ impl Memory {
         recorded: Vec<Envelope<A::Event>>,
         history: bool,
     ) {
+        if self.hub.observed() {
+            let traces: Vec<_> = recorded
+                .iter()
+                .map(|envelope| domain::telemetry::Trace::Event(telemetry::event_trace::<A>(id, envelope)))
+                .collect();
+            self.hub.publish(&traces);
+        }
         let consumers = self.consumers.get(&TypeId::of::<A>()).map_or(&[][..], |c| &c[..]);
         if !consumers.is_empty() {
             for envelope in &recorded {
@@ -556,6 +608,7 @@ impl Memory {
             self.commit(id, &mut instance, state, recorded, true);
         }
         self.deliver::<AggregateOf<I>>();
+        self.hub.flush();
     }
 
     /// Every event `A` has recorded that `keep` accepts, as deliveries.
@@ -590,23 +643,27 @@ impl Memory {
     /// # Panics
     /// When the store fails.
     pub fn versions(&self) -> Vec<(StreamId, u64)> {
-        if let Some(store) = &self.store {
-            let mut versions: Vec<_> = store
-                .versions()
-                .unwrap_or_else(|e| panic!("the store failed: {e}"))
-                .into_iter()
-                .map(|(stream, version)| (StreamId::from(stream), version))
-                .collect();
-            versions.sort();
-            return versions;
-        }
-        let stores = lock(&self.stores);
-        let mut versions: Vec<_> = stores.values().flat_map(|store| store.versions()).collect();
-        versions.sort();
-        versions
+        self.try_versions().unwrap_or_else(|e| panic!("{e}"))
     }
 
-    fn instance<I: AggregateId>(&self, id: &I) -> Arc<Mutex<Instance<AggregateOf<I>>>> {
+    fn try_versions(&self) -> Result<Vec<(StreamId, u64)>, String> {
+        let mut versions: Vec<_> = match &self.store {
+            Some(store) => store
+                .versions()
+                .map_err(|e| format!("the store failed: {e}"))?
+                .into_iter()
+                .map(|(stream, version)| (StreamId::from(stream), version))
+                .collect(),
+            None => lock(&self.stores).values().flat_map(|store| store.versions()).collect(),
+        };
+        versions.sort();
+        Ok(versions)
+    }
+
+    fn instance<I: AggregateId>(&self, id: &I) -> Arc<Mutex<Instance<AggregateOf<I>>>>
+    where
+        AggregateOf<I>: Evolve,
+    {
         let mut stores = lock(&self.stores);
         let store = stores
             .entry(TypeId::of::<AggregateOf<I>>())
@@ -711,9 +768,15 @@ trait AnyStore: MaybeSend + MaybeSync {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn versions(&self) -> Vec<(StreamId, u64)>;
+    /// How telemetry reads this aggregate, for one used without a model.
+    fn traced(&self) -> Traced;
 }
 
-impl<A: Aggregate> AnyStore for Instances<A> {
+impl<A: Evolve> AnyStore for Instances<A> {
+    fn traced(&self) -> Traced {
+        Traced::of::<A>()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -753,6 +816,9 @@ pub(crate) struct Registrar<'m> {
 impl Registry for Registrar<'_> {
     fn aggregate<A: Evolve>(&mut self) {
         self.memory.histories.insert(TypeId::of::<A>(), Memory::history::<A>);
+        if self.memory.traced.insert(TypeId::of::<A>(), Traced::of::<A>()).is_none() {
+            self.memory.add_part(domain::telemetry::Kind::Aggregate, TypeId::of::<A>(), A::NAME, &[], 0);
+        }
         A::register_commands(self);
     }
 
@@ -772,7 +838,7 @@ impl Registry for Registrar<'_> {
         V::sources(&mut HostSources { registrar: self });
 
         let memory = &*self.memory;
-        let mut host = ViewHost::<V>::new(memory.store.clone());
+        let mut host = ViewHost::<V>::new(memory.store.clone(), memory.hub.clone());
         V::sources(&mut Wire { host: &mut host, memory });
         let sources: Vec<TypeId> = host.sources().collect();
 
@@ -807,14 +873,20 @@ impl Registry for Registrar<'_> {
         history.into_iter().for_each(|delivery| host.push(delivery));
         host.drain();
 
+        let memory = &mut *self.memory;
+        memory.add_part(domain::telemetry::Kind::View, id, V::NAME, &sources, V::VERSION);
+        memory.view_keys.insert(V::NAME, |memory| memory.view::<V>().host.keys());
+        memory.replay_views.push(|shadow| {
+            Registry::view::<V>(&mut Registrar { memory: shadow, hosting: HashSet::new(), rebuilt: HashSet::new() })
+        });
         for source in sources {
-            match self.memory.view_consumers.get(&source) {
+            match memory.view_consumers.get(&source) {
                 Some(upstream) => upstream.add_downstream(host.clone()),
-                None => self.memory.consumers.entry(source).or_default().push(host.clone()),
+                None => memory.consumers.entry(source).or_default().push(host.clone()),
             }
         }
-        self.memory.view_consumers.insert(id, host.clone());
-        self.memory.views.insert(id, Box::new(host));
+        memory.view_consumers.insert(id, host.clone());
+        memory.views.insert(id, Box::new(host));
         self.hosting.remove(&id);
     }
 }

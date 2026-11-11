@@ -12,7 +12,17 @@
 //! ← {"id":2,"state":{"owner":"sam","balance":100}}
 //! ← {"id":2,"refused":{"NotOwner":null}}
 //! ```
+//!
+//! A server that allows it also serves [telemetry](crate::telemetry): the model's parts, its
+//! streams, and a trace of everything that happens, outside the Api and its views' `validate`.
+//!
+//! ```text
+//! → {"id":3,"op":"trace","since":"start"}
+//! ← {"id":3,"trace":{"event":{"aggregate":"Account","stream":"Account/sam-main","seq":1,..}}}
+//! ← {"id":3,"trace":{"caught_up":{"streams":{"Account/sam-main":1}}}}
+//! ```
 
+use crate::telemetry::{Since, Trace};
 use crate::{Command, CommandId, Cursor, Entry, Receipt, Snapshot, StreamId, Timestamp, View};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -46,8 +56,22 @@ pub enum Op {
     Watch { view: String, key: Value },
     /// The key's entries after `after`, then `caught_up`, then new ones as they're recorded.
     Events { view: String, key: Value, after: u64 },
-    /// Ends the `watch` or `events` with this id.
+    /// Ends the `watch`, `events` or `trace` with this id.
     Stop,
+    /// Telemetry: the model's parts, as a `Catalog`.
+    Catalog,
+    /// Telemetry: every stream's version and what's failing, as a `Status`.
+    Status,
+    /// Telemetry: one aggregate instance at `at`, or now, as an `AggregateTrace` or `null`.
+    Aggregate {
+        stream: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<u64>,
+    },
+    /// Telemetry: every key of a view, as `ViewKey`s.
+    ViewKeys { view: String },
+    /// Telemetry: what happened since `since` as `trace` messages, then what happens, until `stop`.
+    Trace { since: Since },
 }
 
 /// A stream at a version, such as a receipt's.
@@ -79,6 +103,8 @@ pub enum Body {
     CaughtUp(u64),
     /// The view's `validate` refused the read. Nothing more follows for this id.
     Refused(Value),
+    /// One step of a `trace`.
+    Trace(Box<Trace>),
 }
 
 /// Why a request failed.

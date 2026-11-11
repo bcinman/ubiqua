@@ -114,6 +114,14 @@ let me = Client::<BankApi>::in_process(memory.clone()).acting_as(User("sam".into
 let _server = Server::<BankApi>::new(memory).sessions(check).listen("0.0.0.0:7878")?;
 ```
 
+## Serve telemetry
+
+```rust
+.telemetry(|user: Option<&User>| user.is_some_and(|u| u.is_staff()))   // who may watch it run
+```
+
+Without it, nobody gets telemetry. See [Watch it run](telemetry.md).
+
 ## What goes over the wire
 
 JSON text messages, one per request and answer. Values are in the same JSON as storage. See [`domain::wire`](../crates/domain/src/wire.rs).

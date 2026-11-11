@@ -13,6 +13,7 @@ pub mod host;
 mod maybe;
 mod policy;
 mod projection;
+pub mod telemetry;
 mod values;
 mod view;
 pub mod wire;

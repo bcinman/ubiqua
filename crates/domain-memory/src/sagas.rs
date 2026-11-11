@@ -530,6 +530,7 @@ impl Memory {
             S::NAME
         );
         self.runners.push(host);
+        self.add_part(domain::telemetry::Kind::Saga, TypeId::of::<S>(), S::NAME, &[], 0);
         self
     }
 

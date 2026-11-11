@@ -15,7 +15,7 @@ use domain::wire::{self, At, Body, Failure, Op, Request, Response};
 use domain::{
     AggregateId, Api, Apply, Command, Cursor, Frame, Handles, Position, ReadCx, SendError, StreamId, Validate, View,
 };
-use domain_memory::{Feed, Memory, Watch};
+use domain_memory::{Feed, Memory, TraceFeed, Watch};
 use domain_websocket::{Message, ServerTls, Writer};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -33,12 +33,14 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 pub const MAX_LIST: usize = 1000;
 
 type Sessions = Arc<dyn Fn(&str) -> Option<CurrentActor> + Send + Sync>;
+type Observers = Arc<dyn Fn(Option<&CurrentActor>) -> bool + Send + Sync>;
 
 /// A model's Api, ready to serve. Start it with [`listen`](Self::listen).
 pub struct Server<A: Api> {
     memory: Arc<Memory>,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
+    observers: Option<Observers>,
     tls: Option<ServerTls>,
     _api: PhantomData<fn() -> A>,
 }
@@ -52,7 +54,7 @@ impl<A: Api> Server<A> {
         let mut registrar = Registrar { memory: &memory, routes: Routes::default() };
         A::register(&mut registrar);
         let routes = Arc::new(registrar.routes);
-        Self { memory, routes, sessions: None, tls: None, _api: PhantomData }
+        Self { memory, routes, sessions: None, observers: None, tls: None, _api: PhantomData }
     }
 
     /// Serves `wss://` with this certificate, so connections are encrypted and clients can check
@@ -73,6 +75,16 @@ impl<A: Api> Server<A> {
         T: Any + std::fmt::Debug + Send + Sync,
     {
         self.sessions = Some(Arc::new(move |token| check(token).map(CurrentActor::new)));
+        self
+    }
+
+    /// Serves [telemetry](domain::telemetry) to the connections `allow` accepts: every aggregate,
+    /// event and view, outside the Api and its views' `validate`, for a dashboard. `allow` gets
+    /// who the session check signed in, if they're a `T`.
+    ///
+    /// Without it, no connection gets telemetry.
+    pub fn telemetry<T: Any>(mut self, allow: impl Fn(Option<&T>) -> bool + Send + Sync + 'static) -> Self {
+        self.observers = Some(Arc::new(move |actor| allow(actor.and_then(CurrentActor::get))));
         self
     }
 
@@ -99,6 +111,7 @@ impl<A: Api> Server<A> {
                     memory: self.memory.clone(),
                     routes: self.routes.clone(),
                     sessions: self.sessions.clone(),
+                    observers: self.observers.clone(),
                     tls: self.tls.clone(),
                     shared: accepting.clone(),
                 };
@@ -416,6 +429,26 @@ fn events<V: Apply + Validate>(
     Ok(Box::new(relay))
 }
 
+/// Sends a trace to its connection, in order, until the handle is dropped.
+fn trace(feed: TraceFeed, out: Outbox) -> Handle {
+    struct Relay {
+        feed: TraceFeed,
+        out: Outbox,
+        /// Held while pumping, so traces go out in the order they happened.
+        order: Mutex<()>,
+    }
+    let relay = Arc::new(Relay { feed, out, order: Mutex::new(()) });
+    let weak = Arc::downgrade(&relay);
+    relay.feed.notify(move || {
+        let Some(relay) = weak.upgrade() else { return };
+        let _order = lock(&relay.order);
+        for trace in relay.feed.drain() {
+            relay.out.send(Body::Trace(Box::new(trace)));
+        }
+    });
+    Box::new(relay)
+}
+
 /// Calls `pump` now and whenever the relay's subscription has news. Weak, so dropping the
 /// handle stops it.
 fn start<V: View, S: Notifies + Send + Sync + 'static>(relay: &Arc<Relay<V, S>>, pump: fn(&Relay<V, S>)) {
@@ -460,6 +493,7 @@ struct Connection {
     memory: Arc<Memory>,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
+    observers: Option<Observers>,
     tls: Option<ServerTls>,
     shared: Arc<Shared>,
 }
@@ -577,6 +611,31 @@ impl Connection {
                 live.remove(&request.id);
                 return;
             }
+            Op::Catalog | Op::Status | Op::Aggregate { .. } | Op::ViewKeys { .. } | Op::Trace { .. }
+                if !self.observers.as_ref().is_some_and(|allow| allow(actor)) =>
+            {
+                Body::Err(Failure::Invalid("this connection may not read telemetry".into()))
+            }
+            Op::Catalog => encode(&memory.telemetry().catalog()).map_or_else(unavailable, Body::Ok),
+            Op::Status => match memory.telemetry().status() {
+                Ok(status) => encode(&status).map_or_else(unavailable, Body::Ok),
+                Err(e) => unavailable(e),
+            },
+            Op::Aggregate { stream, at } => match memory.telemetry().aggregate(&stream, at) {
+                Ok(aggregate) => encode(&aggregate).map_or_else(unavailable, Body::Ok),
+                Err(e) => unavailable(e),
+            },
+            Op::ViewKeys { view } => match memory.telemetry().view(&view) {
+                Some(keys) => encode(&keys).map_or_else(unavailable, Body::Ok),
+                None => Body::Err(Failure::Invalid(format!("no view {view} is hosted here"))),
+            },
+            Op::Trace { since } => match memory.telemetry().trace(since) {
+                Ok(feed) => {
+                    live.insert(request.id, trace(feed, outbox));
+                    return;
+                }
+                Err(e) => unavailable(e),
+            },
         };
         outbox.send(answer);
     }

@@ -5,9 +5,10 @@ use crate::live::{LiveView, Shared};
 use crate::pending::{Pending, lock, pending};
 use crate::predict::Overlay;
 use crate::{AggregateOf, Connection, Read, ReadError, ReadResult, Sent};
+use domain::telemetry::{Since, Trace};
 use domain::wire::{self, At, Body, Failure, Op, Request, Response};
 use domain::{Apply, Command, CommandId, Cursor, Entry, Frame, Handles, Position, SendError, Snapshot, Validate, View};
-use domain_memory::Feed;
+use domain_memory::{Feed, TraceFeed};
 use domain_websocket::{ClientTls, ConnectError, Message, Writer};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -260,6 +261,67 @@ impl Remote {
             _ => false,
         };
         let request = move || Op::Events { view: V::NAME.into(), key: key.clone(), after: last.load(Ordering::SeqCst) };
+        self.subscribe(id, Box::new(request), Arc::new(on));
+        feed
+    }
+
+    /// A one-off telemetry read, answered with a `T`.
+    pub(crate) fn telemetry<T: DeserializeOwned + Send + 'static>(&self, op: Op) -> Pending<Result<T, String>> {
+        let (pending, resolver) = pending();
+        self.request(
+            op,
+            Kind::Read,
+            Box::new(move |answer| {
+                resolver.resolve(match answer {
+                    Ok(Body::Ok(value)) => decode(value),
+                    Ok(other) => Err(failure(other)),
+                    Err(reason) => Err(reason),
+                })
+            }),
+        );
+        pending
+    }
+
+    pub(crate) fn trace(self: &Arc<Self>, since: Since) -> TraceFeed {
+        let id = self.next_id();
+        let (publisher, feed) = domain_memory::channel::<Trace>(Unsubscribe { remote: Arc::downgrade(self), id });
+        // How far it has gone in each stream, to pick up from after a reconnect. Unknown for
+        // `Now` until its `CaughtUp` says.
+        let seen = Arc::new(Mutex::new(match since {
+            Since::Now => None,
+            Since::Start => Some(BTreeMap::new()),
+            Since::After(after) => Some(after),
+        }));
+        let last = seen.clone();
+        let on = move |body: Body| match body {
+            Body::Trace(trace) => {
+                let trace = *trace;
+                {
+                    let mut seen = lock(&seen);
+                    if let (None, Trace::CaughtUp { streams }) = (&*seen, &trace) {
+                        *seen = Some(streams.clone());
+                    }
+                    if let Some(seen) = &mut *seen {
+                        let mut reach = |stream: &str, seq: u64| {
+                            let at = seen.entry(stream.to_string()).or_default();
+                            *at = (*at).max(seq);
+                        };
+                        match &trace {
+                            Trace::Event(e) => reach(&e.stream, e.seq),
+                            Trace::View(v) => v.emitted.iter().for_each(|e| reach(&v.stream, e.cursor)),
+                            Trace::CaughtUp { streams } => streams.iter().for_each(|(s, &seq)| reach(s, seq)),
+                            Trace::Command(_) | Trace::Failed(_) => {}
+                        }
+                    }
+                }
+                publisher.push(trace)
+            }
+            other => {
+                publisher.push(Trace::Failed(failure(other)));
+                false
+            }
+        };
+        let request = move || Op::Trace { since: lock(&last).clone().map_or(Since::Now, Since::After) };
         self.subscribe(id, Box::new(request), Arc::new(on));
         feed
     }

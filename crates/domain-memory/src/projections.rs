@@ -344,6 +344,7 @@ impl Memory {
         history.sort_by(|a, b| a.order().cmp(&b.order()));
         history.into_iter().for_each(|delivery| host.push(delivery));
 
+        self.add_part(domain::telemetry::Kind::Projection, TypeId::of::<P>(), P::NAME, &sources, P::VERSION);
         for source in sources {
             match self.view_consumers.get(&source) {
                 Some(upstream) => upstream.add_downstream(host.clone()),

@@ -12,6 +12,7 @@ mod pending;
 mod predict;
 #[cfg(not(target_arch = "wasm32"))]
 mod remote;
+mod telemetry;
 
 #[doc(hidden)]
 pub mod compile_checks;
@@ -21,6 +22,7 @@ pub use domain_memory::{Feed, Recv, Subscription};
 pub use domain_websocket::ClientTls;
 pub use live::{Changed, Listener, LiveView};
 pub use pending::Pending;
+pub use telemetry::ClientTelemetry;
 
 use domain::host::{CurrentActor, SentVia};
 use domain::{

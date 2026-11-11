@@ -416,6 +416,7 @@ impl Memory {
             }
         }
 
+        self.add_part(domain::telemetry::Kind::Policy, TypeId::of::<P>(), P::NAME, &sources, 0);
         for source in sources {
             match self.view_consumers.get(&source) {
                 Some(upstream) => upstream.add_downstream(host.clone()),

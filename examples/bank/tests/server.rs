@@ -212,6 +212,36 @@ fn a_refused_prediction_is_taken_back() {
 }
 
 #[test]
+fn commands_that_commit_together_show_each_change_once() {
+    let memory = bank();
+    let app = Client::<BankApi>::in_process(memory.clone()).acting_as(User("sam".into()));
+    wait(app.send(&sam(), OpenAccount { owner: "sam".into() })).unwrap();
+    wait(app.send(&sam(), DepositMoney { amount: 100 })).unwrap();
+    let summary = app.view::<AccountSummary>().live(&sam());
+    eventually(|| matches!(&*summary.latest().0, Ok(Some(s)) if s.balance == 100));
+    let shown = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = shown.clone();
+    let _redraw = summary.on_change(move |read, _| {
+        if let Ok(Some(s)) = &**read {
+            record.lock().unwrap().push(s.balance);
+        }
+    });
+
+    // Hold the domain thread, so both commands run in one batch and are answered after it.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    memory.exec(move |_| held.recv().unwrap(), |_| {});
+    let deposit = app.send(&sam(), DepositMoney { amount: 50 });
+    let withdraw = app.send(&sam(), WithdrawMoney { amount: 30 });
+    release.send(()).unwrap();
+    wait(deposit).unwrap();
+    wait(withdraw).unwrap();
+
+    // The deposit's answer finds the withdrawal in the model's state, and still waiting: 90 would
+    // take the 30 off twice.
+    assert_eq!(*shown.lock().unwrap(), [150, 120]);
+}
+
+#[test]
 fn a_command_cut_off_before_its_answer_is_sent_again_and_takes_effect_once() {
     let memory = bank();
     memory.call(move |m| m.send(&sam(), OpenAccount { owner: "sam".into() }).map(drop)).unwrap().unwrap();

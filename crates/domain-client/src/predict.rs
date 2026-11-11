@@ -2,8 +2,11 @@
 //! effect, using the view's `Predict` impls.
 //!
 //! A view's state arrives before the answer to a command that changed it, in process and over a
-//! connection. So while a command waits, newer states are held back until its answer arrives:
-//! then the state that includes it replaces the prediction in one step, never showing it twice.
+//! connection. So while commands wait, newer states are held back until all their answers arrive:
+//! then the state that includes them replaces the predictions in one step, never showing one
+//! twice. Commands that run in one batch are answered after it, so the state that includes one
+//! may include those sent after it, still waiting; until they're answered too, one that
+//! committed stays shown as predicted, and one that was refused is taken back.
 
 use crate::Read;
 use crate::live::Shared;
@@ -47,7 +50,7 @@ impl Predictor {
         for overlay in &overlays {
             overlay.add(id, target, command);
         }
-        Some(Prediction { id, overlays: overlays.iter().map(Arc::downgrade).collect() })
+        Some(Prediction { id, overlays: overlays.iter().map(Arc::downgrade).collect(), committed: false })
     }
 
     pub(crate) fn register<V: View>(&self, overlay: &Arc<Overlay<V>>)
@@ -62,24 +65,31 @@ impl Predictor {
     }
 }
 
-/// A command shown on live views before its answer. Dropping it, once the answer is in, takes it
-/// off them.
+/// A command shown on live views before its answer. [`answered`](Self::answered) tells them the
+/// answer; dropping it unanswered takes it off them as if it had been refused.
 pub(crate) struct Prediction {
     id: u64,
     overlays: Vec<Weak<dyn Predicting>>,
+    committed: bool,
+}
+
+impl Prediction {
+    pub(crate) fn answered(mut self, committed: bool) {
+        self.committed = committed;
+    }
 }
 
 impl Drop for Prediction {
     fn drop(&mut self) {
         for overlay in self.overlays.iter().filter_map(Weak::upgrade) {
-            overlay.settle(self.id);
+            overlay.settle(self.id, self.committed);
         }
     }
 }
 
 trait Predicting: MaybeSend + MaybeSync {
     fn add(&self, id: u64, target: &dyn Any, command: &dyn Any);
-    fn settle(&self, id: u64);
+    fn settle(&self, id: u64, committed: bool);
 }
 
 /// One live view's state from the model, with the waiting commands on top.
@@ -100,10 +110,17 @@ struct Layers<V: View> {
     key: V::Key,
     /// The newest state from the model.
     latest: Read<V>,
-    /// What the predictions sit on: `latest` as of the last answer.
+    /// What the predictions sit on: `latest` as of the last time nothing was waiting.
     base: Read<V>,
-    /// Waiting commands, oldest first.
-    waiting: Vec<(u64, Change<V>)>,
+    /// Commands sent since `base`, oldest first, and whether each one's answer is in. All of
+    /// them change what's shown: a refused one is removed.
+    waiting: Vec<Waiting<V>>,
+}
+
+struct Waiting<V: View> {
+    id: u64,
+    change: Change<V>,
+    answered: bool,
 }
 
 impl<V: View> Overlay<V> {
@@ -153,7 +170,7 @@ impl<V: View> Overlay<V> {
                 let layers = lock(&self.layers);
                 let mut shown = layers.base.clone();
                 if let Ok(state) = &mut shown {
-                    layers.waiting.iter().for_each(|(_, change)| change(&layers.key, state));
+                    layers.waiting.iter().for_each(|waiting| (waiting.change)(&layers.key, state));
                 }
                 shown
             };
@@ -176,20 +193,25 @@ where
 {
     fn add(&self, id: u64, target: &dyn Any, command: &dyn Any) {
         let Some(make) = self.makers.get(&command.type_id()) else { return };
-        lock(&self.layers).waiting.push((id, make(target, command)));
+        lock(&self.layers).waiting.push(Waiting { id, change: make(target, command), answered: false });
         self.publish();
     }
 
-    fn settle(&self, id: u64) {
+    fn settle(&self, id: u64, committed: bool) {
         {
             let mut layers = lock(&self.layers);
-            let before = layers.waiting.len();
-            layers.waiting.retain(|(waiting, _)| *waiting != id);
-            if layers.waiting.len() == before {
-                return;
+            let Some(at) = layers.waiting.iter().position(|waiting| waiting.id == id) else { return };
+            if committed {
+                layers.waiting[at].answered = true;
+            } else {
+                layers.waiting.remove(at);
             }
-            // The answer is in, so `latest` includes the command, if it changed this key.
-            layers.base = layers.latest.clone();
+            // `latest` includes every command answered so far, and perhaps some still waiting,
+            // so it replaces the predictions only once none is.
+            if layers.waiting.iter().all(|waiting| waiting.answered) {
+                layers.waiting.clear();
+                layers.base = layers.latest.clone();
+            }
         }
         self.publish();
     }

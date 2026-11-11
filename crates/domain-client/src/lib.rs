@@ -227,8 +227,10 @@ impl<A: Api> Client<A> {
     {
         // Taken off the live views once the answer is in, before `then` sees it.
         let prediction = self.predictor.predict(id, &command);
-        let then = move |sent| {
-            drop(prediction);
+        let then = move |sent: Sent<C>| {
+            if let Some(prediction) = prediction {
+                prediction.answered(sent.is_ok());
+            }
             then(sent);
         };
         let runtime = match &self.backend {

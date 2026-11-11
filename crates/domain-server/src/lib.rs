@@ -10,10 +10,10 @@
 //!
 //! Plain threads, no async runtime: one pair per connection. [`Server::tls`] serves `wss://`. The protocol is [`domain::wire`].
 
+use domain::host::{ApiRegistry, CurrentActor};
 use domain::wire::{self, At, Body, Failure, Op, Request, Response};
 use domain::{
-    AggregateId, Api, ApiRegistry, Apply, Command, CurrentActor, Cursor, Frame, Handles, Position, ReadCx, SendError,
-    StreamId, Validate, View,
+    AggregateId, Api, Apply, Command, Cursor, Frame, Handles, Position, ReadCx, SendError, StreamId, Validate, View,
 };
 use domain_memory::{Feed, Memory, Watch};
 use domain_websocket::{Message, ServerTls, Writer};

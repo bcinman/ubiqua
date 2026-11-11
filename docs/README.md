@@ -58,8 +58,8 @@ the same Client in process, or over WebSocket to a server shared by many users
 
 | Crate | What it holds |
 | --- | --- |
-| `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
-| `domain-memory` | `Memory`: runs a model, its views, policies, projections and sagas in memory. |
+| `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol; `domain::prelude` for a model, `domain::host` for hosts. No runtime. |
+| `domain-memory` | `Memory`: runs a model, its views, policies, projections and sagas in memory; `domain_memory::store` for writing a store. |
 | `domain-sqlite` | `Sqlite`: keeps a `Memory` in a file. |
 | `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses, in process or connected. |
 | `domain-server` | `Server`: serves an Api over WebSocket. |

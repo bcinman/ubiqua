@@ -6,9 +6,10 @@ use crate::calls::{BoxFuture, unbox};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
 use crate::{Acting, AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, lock, reason};
+use domain::host::{CurrentActor, PolicySources, Reacts, SourcePayload};
 use domain::{
-    AggregateId, Answered, Call, Command, CommandId, CurrentActor, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects,
-    Policy, PolicySources, Reacts, Receipt, SendError, Source, SourcePayload, StreamId, Timestamp,
+    AggregateId, Answered, Call, Command, CommandId, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects, Policy,
+    Receipt, SendError, Source, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
@@ -456,7 +457,7 @@ impl<P: Policy> Acting<'_, PolicyCx<P>> {
 }
 
 /// A policy in a model's `policies(..)`, built with `Default`.
-impl<P: React + Default> domain::HostPolicy<P> for Memory {
+impl<P: React + Default> domain::host::HostPolicy<P> for Memory {
     fn host_policy(self) -> Self {
         self.policy(P::default())
     }

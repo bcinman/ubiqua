@@ -1,5 +1,5 @@
 use crate::*;
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply};
+use domain::prelude::*;
 
 #[derive(Aggregate)]
 #[aggregate(

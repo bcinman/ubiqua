@@ -5,9 +5,10 @@
 //! call is left unanswered. Policies run after every step, and calls to external systems without an
 //! adapter wait until the story answers them.
 
+use domain::host::{Adapter, CurrentActor, HostPolicy, HostSaga, Hosts};
 use domain::{
-    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles,
-    HostPolicy, HostSaga, Hosts, IntoEvents, Model, Receipt, SendError, StreamId, Timestamp,
+    Aggregate, AggregateId, Apply, Call, CallError, Command, Cursor, Evolve, Handles, IntoEvents, Model, Receipt,
+    SendError, StreamId, Timestamp,
 };
 use domain_memory::{Memory, Project, React, Run, SagaStatus, StubbedCall};
 use std::collections::HashMap;

@@ -3,9 +3,10 @@
 
 use crate::store::{EntryRow, KeyRow, Store, ViewRows};
 use crate::{json, lock};
+use domain::host::{Consumes, Keyed, SourcePayload};
 use domain::{
-    Apply, Consumes, Cursor, Entry, Frame, Keyed, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source,
-    SourcePayload, StreamId, Timestamp, View, ViewCx,
+    Apply, Cursor, Entry, Frame, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source, StreamId, Timestamp,
+    View, ViewCx,
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet, VecDeque};

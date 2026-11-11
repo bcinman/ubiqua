@@ -21,6 +21,13 @@ serde = { version = "1", features = ["derive"] }
 domain-story = { path = "../../crates/domain-story" }
 ```
 
+Each file of the model imports what it uses from the preludes:
+
+```rust
+use domain::prelude::*;          // Aggregate, Decide, View, Apply, Policy, ..
+use domain_memory::prelude::*;   // React, PolicyCx, Project, Run, SagaCx, .. for policies, projections and sagas
+```
+
 ## 2. Name the id
 
 ```rust

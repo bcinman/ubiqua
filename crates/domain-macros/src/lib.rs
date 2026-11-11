@@ -180,7 +180,7 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
         #never_rejects
         #unit_reply
 
-        impl<__E> ::domain::Widen<__E> for #event_enum
+        impl<__E> ::domain::host::Widen<__E> for #event_enum
         where #( __E: ::std::convert::From<#events>, )*
         {
             fn widen(self) -> __E {
@@ -188,7 +188,7 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
-        impl<__R> ::domain::WidenRejection<__R> for #rejection_enum
+        impl<__R> ::domain::host::WidenRejection<__R> for #rejection_enum
         where #( __R: ::std::convert::From<#rejects>, )*
         {
             fn widen(self) -> __R {
@@ -244,7 +244,7 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
             type State = #state;
             type Event = #event_enum;
 
-            fn register_commands<__R: ::domain::Registry>(registry: &mut __R) {
+            fn register_commands<__R: ::domain::host::Registry>(registry: &mut __R) {
                 #( registry.command::<#commands>(); )*
             }
         }
@@ -258,7 +258,7 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
             type SourceEvent = #event_enum;
             type SourceState = ();
 
-            fn register_source<__R: ::domain::Registry>(registry: &mut __R) {
+            fn register_source<__R: ::domain::host::Registry>(registry: &mut __R) {
                 registry.aggregate::<Self>();
             }
         }
@@ -321,7 +321,7 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
         impl ::domain::Api for #name {
             const NAME: &'static str = #tag;
 
-            fn register<__R: ::domain::ApiRegistry>(registry: &mut __R) {
+            fn register<__R: ::domain::host::ApiRegistry>(registry: &mut __R) {
                 #( registry.command::<#commands>(); )*
                 #( registry.view::<#views>(); )*
             }
@@ -427,11 +427,11 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             type Event = #event_ty;
             type Rejection = #rejection_enum;
 
-            fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
+            fn sources<__S: ::domain::host::Sources<Self>>(sources: &mut __S) {
                 #( sources.source::<#source_paths>(); )*
             }
 
-            fn predictions<__P: ::domain::Predictions<Self>>(predictions: &mut __P) {
+            fn predictions<__P: ::domain::host::Predictions<Self>>(predictions: &mut __P) {
                 let _ = &predictions;
                 #( predictions.predicts::<#predicts>(); )*
             }
@@ -446,7 +446,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             type SourceEvent = #event_ty;
             type SourceState = #state;
 
-            fn register_source<__R: ::domain::Registry>(registry: &mut __R) {
+            fn register_source<__R: ::domain::host::Registry>(registry: &mut __R) {
                 registry.view::<Self>();
             }
         }
@@ -511,7 +511,7 @@ fn projection(input: &DeriveInput) -> syn::Result<Tokens> {
             const NAME: &'static str = #tag;
             #version
 
-            fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
+            fn sources<__S: ::domain::host::Sources<Self>>(sources: &mut __S) {
                 #( sources.source::<#source_paths>(); )*
             }
         }
@@ -563,7 +563,7 @@ fn saga(input: &DeriveInput) -> syn::Result<Tokens> {
         #(
             impl ::std::convert::From<<#sends as ::domain::Command>::Rejection> for #rejection_enum {
                 fn from(rejection: <#sends as ::domain::Command>::Rejection) -> Self {
-                    ::domain::WidenRejection::widen(rejection)
+                    ::domain::host::WidenRejection::widen(rejection)
                 }
             }
         )*
@@ -604,7 +604,7 @@ fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
     let reacts = sources.iter().map(|(source, list)| {
         let pick = pick_input(source, list, &input_enum);
         quote! {
-            impl ::domain::Reacts<#source> for #name {
+            impl ::domain::host::Reacts<#source> for #name {
                 #[allow(clippy::question_mark)]
                 fn route(
                     event: &<#source as ::domain::Source>::SourceEvent,
@@ -621,7 +621,7 @@ fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
             const NAME: &'static str = #tag;
             type Input = #input_enum;
 
-            fn sources<__S: ::domain::PolicySources<Self>>(sources: &mut __S) {
+            fn sources<__S: ::domain::host::PolicySources<Self>>(sources: &mut __S) {
                 #( sources.source::<#source_paths>(); )*
             }
         }
@@ -698,10 +698,10 @@ fn external_system(input: &DeriveInput) -> syn::Result<Tokens> {
             const NAME: &'static str = #tag;
         }
 
-        impl<__I> ::domain::Adapter<__I> for #name
+        impl<__I> ::domain::host::Adapter<__I> for #name
         where #( __I: ::domain::Answer<#calls>, )*
         {
-            fn register<__R: ::domain::Calls>(adapter: ::std::sync::Arc<__I>, calls: &mut __R) {
+            fn register<__R: ::domain::host::Calls>(adapter: ::std::sync::Arc<__I>, calls: &mut __R) {
                 let _ = &adapter;
                 #( calls.answer::<#calls, __I>(::std::clone::Clone::clone(&adapter)); )*
             }
@@ -746,10 +746,10 @@ fn keyed(name: &Ident, key: &Type, sources: &[(Path, Vec<Path>)], key_of: &[Path
             quote!(<Self as ::domain::KeyOf<#source>>::key_of(::domain::Origin { id, state }, &input)?)
         } else {
             quote_spanned!(source.span() =>
-                <#key as ::domain::KeyFrom<<#source as ::domain::Source>::SourceId>>::key_from(id))
+                <#key as ::domain::host::KeyFrom<<#source as ::domain::Source>::SourceId>>::key_from(id))
         };
         quote! {
-            impl ::domain::Consumes<#source> for #name {
+            impl ::domain::host::Consumes<#source> for #name {
                 #[allow(clippy::question_mark)]
                 fn route(
                     id: &<#source as ::domain::Source>::SourceId,
@@ -765,7 +765,7 @@ fn keyed(name: &Ident, key: &Type, sources: &[(Path, Vec<Path>)], key_of: &[Path
         }
     });
     quote! {
-        impl ::domain::Keyed for #name {
+        impl ::domain::host::Keyed for #name {
             type Key = #key;
             type Input = #input_enum;
         }
@@ -778,7 +778,7 @@ fn pick_input(source: &Path, list: &[Path], input_enum: &Ident) -> Tokens {
     quote! {
         #(
             if let ::std::option::Option::Some(e) =
-                <<#source as ::domain::Source>::SourceEvent as ::domain::Member<#list>>::get(event)
+                <<#source as ::domain::Source>::SourceEvent as ::domain::host::Member<#list>>::get(event)
             {
                 #input_enum::#variants(::std::clone::Clone::clone(e))
             } else
@@ -810,20 +810,20 @@ fn model(input: &DeriveInput) -> syn::Result<Tokens> {
         impl ::domain::Model for #name {
             const NAME: &'static str = #tag;
 
-            fn register<__R: ::domain::Registry>(registry: &mut __R) {
+            fn register<__R: ::domain::host::Registry>(registry: &mut __R) {
                 #( registry.aggregate::<#aggregates>(); )*
                 #( registry.view::<#views>(); )*
             }
         }
 
-        impl<__H> ::domain::Hosts<__H> for #name
+        impl<__H> ::domain::host::Hosts<__H> for #name
         where
-            #( __H: ::domain::HostPolicy<#policies>, )*
-            #( __H: ::domain::HostSaga<#sagas>, )*
+            #( __H: ::domain::host::HostPolicy<#policies>, )*
+            #( __H: ::domain::host::HostSaga<#sagas>, )*
         {
             fn host(host: __H) -> __H {
-                #( let host = ::domain::HostPolicy::<#policies>::host_policy(host); )*
-                #( let host = ::domain::HostSaga::<#sagas>::host_saga(host); )*
+                #( let host = ::domain::host::HostPolicy::<#policies>::host_policy(host); )*
+                #( let host = ::domain::host::HostSaga::<#sagas>::host_saga(host); )*
                 host
             }
         }
@@ -846,7 +846,7 @@ fn union(vis: &Visibility, name: &Ident, members: &[Path], doc: &str, kind: Kind
     let kind_impls = match kind {
         Kind::Events => quote! {
             #(
-                impl ::domain::Member<#members> for #name {
+                impl ::domain::host::Member<#members> for #name {
                     #[allow(unreachable_patterns)]
                     fn get(&self) -> ::std::option::Option<&#members> {
                         match self {

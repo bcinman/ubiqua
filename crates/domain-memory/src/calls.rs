@@ -3,7 +3,8 @@
 
 use crate::views::AnyBox;
 use crate::{Memory, lock};
-use domain::{Adapter, Answer, Answered, Call, Calls};
+use domain::host::{Adapter, Calls};
+use domain::{Answer, Answered, Call};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;

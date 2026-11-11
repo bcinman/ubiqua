@@ -7,9 +7,8 @@ use crate::policies::{Next, PolicyRun};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
 use crate::{HostSources, Memory, Registrar, lock, reason};
-use domain::{
-    Consumes, Keyed, MaybeSend, NotCaughtUp, Position, Projection, Source, SourcePayload, Sources, StreamId, Timestamp,
-};
+use domain::host::{Consumes, Keyed, SourcePayload, Sources};
+use domain::{MaybeSend, NotCaughtUp, Position, Projection, Source, StreamId, Timestamp};
 use std::any::TypeId;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;

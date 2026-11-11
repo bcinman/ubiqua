@@ -8,7 +8,8 @@
 use crate::Read;
 use crate::live::Shared;
 use crate::pending::lock;
-use domain::{Command, Keyed, MaybeSend, MaybeSync, Predict, Predictions, View};
+use domain::host::{Keyed, Predictions};
+use domain::{Command, MaybeSend, MaybeSync, Predict, View};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

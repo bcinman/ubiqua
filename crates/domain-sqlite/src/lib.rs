@@ -7,7 +7,7 @@
 //! One process opens a file at a time. Values are stored as JSON, so the file is readable with
 //! any SQLite tool.
 
-use domain_memory::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
+use domain_memory::store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};

@@ -1,7 +1,8 @@
 //! Projections and sagas: what reads events into a store you own, and what carries out a process
 //! that spans several aggregates.
 
-use crate::{Keyed, MaybeSend, MaybeSync, Rejections, Sources};
+use crate::host::{Keyed, Sources};
+use crate::{MaybeSend, MaybeSync, Rejections};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt::{Debug, Display};

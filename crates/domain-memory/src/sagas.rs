@@ -11,9 +11,8 @@ use crate::policies::{Next, PolicyRun};
 use crate::schedules::{PENDING, Unfired, command_key};
 use crate::store::{KeyRow, ScheduleRow, StoreError, ViewRows};
 use crate::{AggregateOf, Memory, decode_json, json, lock, reason};
-use domain::{
-    Command, CurrentActor, Handles, MaybeSend, MaybeSync, NeverRejects, Saga, SendError, StreamId, Timestamp,
-};
+use domain::host::CurrentActor;
+use domain::{Command, Handles, MaybeSend, MaybeSync, NeverRejects, Saga, SendError, StreamId, Timestamp};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -634,7 +633,7 @@ impl<S: Run> RunHost<S> {
 }
 
 /// A saga in a model's `sagas(..)`.
-impl<S: Run> domain::HostSaga<S> for Memory {
+impl<S: Run> domain::host::HostSaga<S> for Memory {
     fn host_saga(self) -> Self {
         self.saga::<S>()
     }

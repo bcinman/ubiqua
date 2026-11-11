@@ -9,6 +9,7 @@ extern crate self as domain;
 mod actor;
 mod api;
 mod external;
+pub mod host;
 mod maybe;
 mod policy;
 mod projection;
@@ -19,6 +20,7 @@ pub mod wire;
 #[doc(hidden)]
 pub mod compile_checks;
 
+use host::{CurrentActor, Registry};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt::{Debug, Display};
@@ -29,22 +31,31 @@ pub mod __private {
     pub use serde;
 }
 
-pub use actor::{CurrentActor, ReadCx};
-pub use api::{Api, ApiRegistry, Reads, Sends, SentVia};
+pub use actor::ReadCx;
+pub use api::{Api, Reads, Sends};
 pub use domain_macros::{
     Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Projection, Rejection, Saga, View, command,
     event, rejection,
 };
-pub use external::{Adapter, Answer, Answered, Call, CallError, Calls, ExternalSystem};
+pub use external::{Answer, Answered, Call, CallError, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};
-pub use policy::{Policy, PolicySources, Reacts};
-pub use projection::{Projection, Saga, WidenRejection};
+pub use policy::Policy;
+pub use projection::{Projection, Saga};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
-    Apply, Consumes, Cursor, Entry, Frame, HostPolicy, HostSaga, Hosts, KeyFrom, KeyOf, Keyed, Member, Model,
-    NotCaughtUp, Origin, Position, Predict, Predictions, Registry, Snapshot, Source, SourcePayload, Sources, Validate,
+    Apply, Cursor, Entry, Frame, KeyOf, Model, NotCaughtUp, Origin, Position, Predict, Snapshot, Source, Validate,
     View, ViewCx,
 };
+
+/// What a model's code uses: `use domain::prelude::*;`. The attributes `#[domain::event]`,
+/// `#[domain::rejection]` and `#[domain::command(..)]` are left out; write them with the path.
+pub mod prelude {
+    pub use crate::{
+        Aggregate, Answer, Answered, Api, Apply, Call, CallError, Command, Cx, Decide, Decision, Event, Evolve,
+        ExternalSystem, KeyOf, Model, Origin, Policy, Predict, Projection, ReadCx, Rejection, Reply, Saga, Timestamp,
+        Validate, View, ViewCx,
+    };
+}
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.
 /// It's stored, so it also serializes.
@@ -120,12 +131,6 @@ tuple_events!(A, B, C, D, F, G, H, I, J);
 tuple_events!(A, B, C, D, F, G, H, I, J, K);
 tuple_events!(A, B, C, D, F, G, H, I, J, K, L);
 tuple_events!(A, B, C, D, F, G, H, I, J, K, L, M);
-
-/// Converts a command's events into an aggregate's events. `#[derive(Command)]` implements it for
-/// every aggregate whose events include all of the command's.
-pub trait Widen<E>: Events {
-    fn widen(self) -> E;
-}
 
 /// The id of one aggregate instance. Each id type belongs to exactly one aggregate, so a command's
 /// target names the aggregate that decides it. `#[derive(Aggregate)]` implements it.
@@ -213,10 +218,10 @@ impl<A, C> Handles<C> for A
 where
     A: Decide<C>,
     C: Command<Target = A::Id> + Reply<A>,
-    C::Event: Widen<A::Event>,
+    C::Event: host::Widen<A::Event>,
 {
     fn widen(event: C::Event) -> A::Event {
-        event.widen()
+        host::Widen::widen(event)
     }
 
     fn reply(state: &A::State) -> C::Reply {

@@ -13,7 +13,7 @@ mod policies;
 mod projections;
 mod sagas;
 mod schedules;
-mod store;
+pub mod store;
 mod views;
 
 pub use calls::StubbedCall;
@@ -21,8 +21,16 @@ pub use policies::{PolicyCx, PolicyError, React};
 pub use projections::{Project, ProjectionError, ProjectionInput};
 pub use sagas::{Run, SagaCx, SagaStatus, Settle, Signal, SignalError, Step};
 pub use schedules::{ScheduleError, UnscheduleError};
-pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
-pub use views::{Feed, Publisher, Recv, Subscription, ViewReader, Watch, channel};
+pub use store::{Store, StoreError};
+pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
+#[doc(hidden)]
+pub use views::{Publisher, channel};
+use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
+
+/// What a model's policies, projections and sagas use: `use domain_memory::prelude::*;`.
+pub mod prelude {
+    pub use crate::{Memory, PolicyCx, PolicyError, Project, ProjectionError, ProjectionInput, React, Run, SagaCx};
+}
 
 /// Sends commands on behalf of someone: from [`Memory::acting_as`] or [`PolicyCx::acting_as`].
 pub struct Acting<'a, H> {
@@ -55,9 +63,10 @@ impl Acting<'_, Memory> {
     }
 }
 
+use domain::host::{Consumes, CurrentActor, Hosts, Keyed, Registry, Sources};
 use domain::{
-    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles, Hosts,
-    IntoEvents, Keyed, MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
+    Aggregate, AggregateId, Apply, Command, CommandId, Cx, Envelope, Evolve, Handles, IntoEvents, MaybeSend, MaybeSync,
+    Model, Receipt, SendError, Source, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};

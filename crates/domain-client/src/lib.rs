@@ -22,9 +22,10 @@ pub use domain_websocket::ClientTls;
 pub use live::{Changed, Listener, LiveView};
 pub use pending::Pending;
 
+use domain::host::{CurrentActor, SentVia};
 use domain::{
-    AggregateId, Api, Apply, Command, CommandId, CurrentActor, Cursor, Entry, Frame, Handles, MaybeSend, MaybeSync,
-    NotCaughtUp, Position, ReadCx, Reads, Receipt, SendError, SentVia, Snapshot, Validate, View,
+    AggregateId, Api, Apply, Command, CommandId, Cursor, Entry, Frame, Handles, MaybeSend, MaybeSync, NotCaughtUp,
+    Position, ReadCx, Reads, Receipt, SendError, Snapshot, Validate, View,
 };
 use domain_memory::{Memory, Publisher, ViewReader, Watch};
 use live::Shared;

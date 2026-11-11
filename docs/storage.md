@@ -94,6 +94,6 @@ An event that doesn't decode stops the read with a message naming its stream and
 - Views and the accounts in use are held in memory.
 - `domain-sqlite` doesn't build for the web.
 
-Write your own store by implementing [`Store`](../crates/domain-memory/src/store.rs).
+Write your own store by implementing [`Store`](../crates/domain-memory/src/store.rs), with the row types in `domain_memory::store`.
 
 Next: [The client](client.md).

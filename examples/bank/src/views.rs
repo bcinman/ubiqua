@@ -1,5 +1,5 @@
 use crate::*;
-use domain::{Apply, KeyOf, Origin, Predict, ReadCx, Validate, View, ViewCx};
+use domain::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

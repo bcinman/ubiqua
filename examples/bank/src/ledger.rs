@@ -2,8 +2,8 @@
 //! kind of table an accountant queries across accounts. A projection writes it.
 
 use crate::*;
-use domain::Projection;
-use domain_memory::{Project, ProjectionError, ProjectionInput};
+use domain::prelude::*;
+use domain_memory::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 

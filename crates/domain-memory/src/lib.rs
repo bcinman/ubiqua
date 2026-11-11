@@ -1,16 +1,25 @@
 //! Runs a domain model in memory: for tests, prototypes and apps that don't need to persist yet.
 //!
 //! Each aggregate instance decides one command at a time; different instances run in parallel.
-//! A command's events, new state and receipt commit together or not at all.
+//! A command's events, new state, receipt and deliveries to views commit together or not at all.
+//! Views apply each source's events in order, at least once, after the commit.
+
+mod views;
+
+pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
 
 use domain::{
-    Aggregate, AggregateId, Command, CommandId, Cx, Envelope, Evolve, Handles, MaybeSend, MaybeSync, Receipt,
-    SendError, StreamId, Timestamp,
+    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, Cx, Envelope, Evolve, Handles, MaybeSend, MaybeSync,
+    Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use views::{AnyBox, Consumer, Delivery, ViewHost};
+
+/// Reads one aggregate's history as deliveries.
+type HistoryFn = fn(&Memory) -> Vec<Arc<Delivery>>;
 
 /// The aggregate an id belongs to.
 type AggregateOf<I> = <I as AggregateId>::Aggregate;
@@ -22,6 +31,14 @@ pub struct Memory {
     stores: Mutex<HashMap<TypeId, Box<dyn AnyStore>>>,
     clock: Box<dyn Clock>,
     sent: AtomicU64,
+    /// The views that read each aggregate, by the aggregate's `TypeId`.
+    consumers: HashMap<TypeId, Vec<Arc<dyn Consumer>>>,
+    /// Each view's `Arc<ViewHost<V>>`, by the view's `TypeId`.
+    views: HashMap<TypeId, AnyBox>,
+    /// The same hosts, for other views that read them.
+    view_consumers: HashMap<TypeId, Arc<dyn Consumer>>,
+    /// How to read each registered aggregate's history, for views added later.
+    histories: HashMap<TypeId, HistoryFn>,
 }
 
 trait Clock: Fn() -> Timestamp + MaybeSend + MaybeSync {}
@@ -43,7 +60,34 @@ impl Memory {
 
     /// Uses `clock` for the time each command is decided.
     pub fn with_clock(clock: impl Fn() -> Timestamp + MaybeSend + MaybeSync + 'static) -> Self {
-        Self { stores: Mutex::default(), clock: Box::new(clock), sent: AtomicU64::new(0) }
+        Self {
+            stores: Mutex::default(),
+            clock: Box::new(clock),
+            sent: AtomicU64::new(0),
+            consumers: HashMap::new(),
+            views: HashMap::new(),
+            view_consumers: HashMap::new(),
+            histories: HashMap::new(),
+        }
+    }
+
+    /// Hosts the model's views. A view added when events already exist receives them first, in
+    /// the order they were recorded.
+    pub fn with<M: Model>(mut self) -> Self {
+        M::register(&mut Registrar { memory: &mut self, hosting: HashSet::new() });
+        self
+    }
+
+    /// Reads a view.
+    ///
+    /// # Panics
+    /// When `V` isn't in a model passed to [`with`](Self::with).
+    pub fn view<V: Apply>(&self) -> ViewReader<V> {
+        let host = self.views.get(&TypeId::of::<V>()).and_then(|host| (**host).downcast_ref::<Arc<ViewHost<V>>>());
+        match host {
+            Some(host) => ViewReader { host: host.clone() },
+            None => panic!("{} isn't hosted here: list it in a model's `views(..)` and use `Memory::with`", V::NAME),
+        }
     }
 
     /// Decides `command` on the instance `id`, commits its events and returns the receipt.
@@ -70,6 +114,22 @@ impl Memory {
     {
         let command_id = command_id.into();
         let stream = StreamId::of::<AggregateOf<C::Target>>(id);
+        let receipt = self.send_locked(id, command, command_id, stream)?;
+        self.deliver::<AggregateOf<C::Target>>();
+        Ok(receipt)
+    }
+
+    fn send_locked<C>(
+        &self,
+        id: &C::Target,
+        command: C,
+        command_id: CommandId,
+        stream: StreamId,
+    ) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
         let instance = self.instance(id);
         let mut instance = lock(&instance);
 
@@ -99,10 +159,35 @@ impl Memory {
         let version = instance.events.len() as u64 + recorded.len() as u64;
         let receipt = Receipt { stream, version, command_id: command_id.clone(), events, reply };
 
+        instance.receipts.insert(command_id, Box::new(receipt.clone()));
+        self.commit(id, &mut instance, state, recorded);
+        Ok(receipt)
+    }
+
+    /// Stores the new state and events, and queues them for the views, under the instance's lock.
+    fn commit<A: Aggregate>(
+        &self,
+        id: &A::Id,
+        instance: &mut Instance<A>,
+        state: A::State,
+        recorded: Vec<Envelope<A::Event>>,
+    ) {
+        let consumers = self.consumers.get(&TypeId::of::<A>()).map_or(&[][..], |c| &c[..]);
+        if !consumers.is_empty() {
+            for envelope in &recorded {
+                let delivery = Arc::new(delivery_of::<A>(id, envelope));
+                consumers.iter().for_each(|consumer| consumer.push(delivery.clone()));
+            }
+        }
         instance.state = state;
         instance.events.extend(recorded);
-        instance.receipts.insert(command_id, Box::new(receipt.clone()));
-        Ok(receipt)
+    }
+
+    /// Applies queued deliveries to the views that read `A`. Runs after the instance is unlocked.
+    fn deliver<A: Aggregate>(&self) {
+        for consumer in self.consumers.get(&TypeId::of::<A>()).into_iter().flatten() {
+            consumer.drain();
+        }
     }
 
     /// The instance's current state.
@@ -124,18 +209,34 @@ impl Memory {
     {
         let stream = StreamId::of::<AggregateOf<I>>(id);
         let at = (self.clock)();
-        let instance = self.instance(id);
-        let mut instance = lock(&instance);
-        let mut state = instance.state.clone();
-        let mut recorded = Vec::new();
-        for event in events {
-            let event = event.into();
-            AggregateOf::<I>::evolve(&mut state, &event);
-            let seq = instance.events.len() as u64 + recorded.len() as u64 + 1;
-            recorded.push(Envelope { stream: stream.clone(), seq, at, command_id: None, event });
+        {
+            let instance = self.instance(id);
+            let mut instance = lock(&instance);
+            let mut state = instance.state.clone();
+            let mut recorded = Vec::new();
+            for event in events {
+                let event = event.into();
+                AggregateOf::<I>::evolve(&mut state, &event);
+                let seq = instance.events.len() as u64 + recorded.len() as u64 + 1;
+                recorded.push(Envelope { stream: stream.clone(), seq, at, command_id: None, event });
+            }
+            self.commit(id, &mut instance, state, recorded);
         }
-        instance.state = state;
-        instance.events.extend(recorded);
+        self.deliver::<AggregateOf<I>>();
+    }
+
+    /// Every event `A` has recorded, as deliveries.
+    fn history<A: Aggregate>(&self) -> Vec<Arc<Delivery>> {
+        let stores = lock(&self.stores);
+        let Some(store) = stores.get(&TypeId::of::<A>()) else { return Vec::new() };
+        let store = store.as_any().downcast_ref::<Store<A>>().expect("store matches its TypeId");
+        let mut history = Vec::new();
+        for (id, instance) in &store.instances {
+            for envelope in &lock(instance).events {
+                history.push(Arc::new(delivery_of::<A>(id, envelope)));
+            }
+        }
+        history
     }
 
     /// Every stream that has events, with its version.
@@ -154,6 +255,11 @@ impl Memory {
         let store = store.as_any_mut().downcast_mut::<Store<AggregateOf<I>>>().expect("store matches its TypeId");
         store.instances.entry(id.clone()).or_default().clone()
     }
+}
+
+fn delivery_of<A: Aggregate>(id: &A::Id, envelope: &Envelope<A::Event>) -> Delivery {
+    let payload = (id.clone(), envelope.event.clone(), ());
+    Delivery::new(TypeId::of::<A>(), envelope.stream.clone(), envelope.seq, envelope.at, payload)
 }
 
 /// A poisoned lock only means a decision panicked before it committed; the data is consistent.
@@ -184,11 +290,16 @@ impl<A: Aggregate> Default for Store<A> {
 }
 
 trait AnyStore: MaybeSend + MaybeSync {
+    fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn versions(&self) -> Vec<(StreamId, u64)>;
 }
 
 impl<A: Aggregate> AnyStore for Store<A> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
@@ -209,5 +320,84 @@ trait AnyReceipt: MaybeSend + MaybeSync {
 impl<C: Command> AnyReceipt for Receipt<C> {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Hosts a model's views on a `Memory`, each after the sources it reads.
+struct Registrar<'m> {
+    memory: &'m mut Memory,
+    /// Views being hosted right now, to catch a view that reads itself through others.
+    hosting: HashSet<TypeId>,
+}
+
+impl Registry for Registrar<'_> {
+    fn aggregate<A: Evolve>(&mut self) {
+        self.memory.histories.insert(TypeId::of::<A>(), Memory::history::<A>);
+    }
+
+    fn view<V: Apply>(&mut self) {
+        let id = TypeId::of::<V>();
+        if self.memory.views.contains_key(&id) {
+            return;
+        }
+        assert!(self.hosting.insert(id), "{} reads itself through other views", V::NAME);
+        V::sources(&mut HostSources { registrar: self });
+
+        let mut collect = Collect { host: ViewHost::<V>::new(), history: Vec::new(), memory: self.memory };
+        V::sources(&mut collect);
+        let Collect { host, mut history, .. } = collect;
+
+        // Receive the history first, oldest first across sources.
+        history.sort_by(|a, b| a.order().cmp(&b.order()));
+        let host = Arc::new(host);
+        history.into_iter().for_each(|delivery| host.push(delivery));
+        host.drain();
+
+        for source in host.sources() {
+            match self.memory.view_consumers.get(&source) {
+                Some(upstream) => upstream.add_downstream(host.clone()),
+                None => self.memory.consumers.entry(source).or_default().push(host.clone()),
+            }
+        }
+        self.memory.view_consumers.insert(id, host.clone());
+        self.memory.views.insert(id, Box::new(host));
+        self.hosting.remove(&id);
+    }
+}
+
+/// Hosts each source of a view before the view itself.
+struct HostSources<'r, 'm> {
+    registrar: &'r mut Registrar<'m>,
+}
+
+impl<V: Apply> Sources<V> for HostSources<'_, '_> {
+    fn source<S: Source>(&mut self)
+    where
+        V: Consumes<S>,
+    {
+        S::register_source(self.registrar);
+    }
+}
+
+/// Routes a view's sources and gathers their history.
+struct Collect<'m, V: Apply> {
+    host: ViewHost<V>,
+    history: Vec<Arc<Delivery>>,
+    memory: &'m Memory,
+}
+
+impl<V: Apply> Sources<V> for Collect<'_, V> {
+    fn source<S: Source>(&mut self)
+    where
+        V: Consumes<S>,
+    {
+        let id = TypeId::of::<S>();
+        self.host.add_source::<S>();
+        if let Some(upstream) = self.memory.view_consumers.get(&id) {
+            self.history.extend(upstream.history());
+            self.host.add_upstream(upstream.clone());
+        } else if let Some(history) = self.memory.histories.get(&id) {
+            self.history.extend(history(self.memory));
+        }
     }
 }

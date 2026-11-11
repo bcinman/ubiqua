@@ -3,9 +3,10 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{DeriveInput, Ident, Path, Token, Type, Visibility, parse_macro_input};
 
 /// `impl Event`, named after the type.
@@ -162,6 +163,16 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
             type Aggregate = #name;
         }
 
+        impl ::domain::Source for #name {
+            type SourceId = #id;
+            type SourceEvent = #event_enum;
+            type SourceState = ();
+
+            fn register_source<__R: ::domain::Registry>(registry: &mut __R) {
+                registry.aggregate::<Self>();
+            }
+        }
+
         const _: () = {
             #[allow(dead_code)]
             fn checks() {
@@ -169,6 +180,189 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
                 #( ::domain::__assert_handles::<#name, #commands>(); )*
             }
         };
+    })
+}
+
+/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..))]`
+///
+/// Generates `<Name>Input` (the events it reads), `<Name>Event` when `events(..)` is given,
+/// `impl View`, and `impl Consumes` per source. `state` defaults to `()`. A source listed in
+/// `key_of(..)` is routed by `impl KeyOf<Source>`; any other source's id must be the key.
+#[proc_macro_derive(View, attributes(view))]
+pub fn derive_view(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    view(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+/// `#[model(aggregates(..), views(..))]`: `impl Model`, registering each part.
+#[proc_macro_derive(Model, attributes(model))]
+pub fn derive_model(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    model(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn view(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());
+    parse_attr(input, "view", |meta| {
+        if meta.path.is_ident("key") {
+            key = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("state") {
+            state = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("from") {
+            meta.parse_nested_meta(|source| {
+                let reads = paths(&source)?;
+                if reads.is_empty() {
+                    return Err(source.error("list the events the view reads from this source"));
+                }
+                sources.push((source.path.clone(), reads));
+                Ok(())
+            })?;
+        } else if meta.path.is_ident("events") {
+            events = Some(paths(&meta)?);
+        } else if meta.path.is_ident("key_of") {
+            key_of = paths(&meta)?;
+        } else {
+            return Err(meta.error("expected `key`, `from`, `state`, `events` or `key_of`"));
+        }
+        Ok(())
+    })?;
+    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a view needs `#[view(key = .., ..)]`"))?;
+    if sources.is_empty() {
+        return Err(syn::Error::new_spanned(name, "a view needs `#[view(from(Source(Event, ..)), ..)]`"));
+    }
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(&input.generics, "a view can't be generic"));
+    }
+    for path in &key_of {
+        if !sources.iter().any(|(source, _)| last_ident(source) == last_ident(path)) {
+            return Err(syn::Error::new_spanned(path, "`key_of` names a source that isn't in `from(..)`"));
+        }
+    }
+    let state = state.map_or_else(|| quote!(()), |t| quote!(#t));
+    let tag = name.to_string();
+
+    // Every event the view reads, once each, in the order first listed.
+    let mut reads: Vec<Path> = Vec::new();
+    for (_, list) in &sources {
+        for path in list {
+            if !reads.iter().any(|r| last_ident(r) == last_ident(path)) {
+                reads.push(path.clone());
+            }
+        }
+    }
+    let input_enum = format_ident!("{}Input", name);
+    let input_doc = format!("The events `{name}` reads.");
+    let input_union = union(&input.vis, &input_enum, &reads, &input_doc, Kind::Events);
+
+    let (event_union, event_ty, auto_emit) = match &events {
+        Some(list) => {
+            let event_enum = format_ident!("{}Event", name);
+            let doc = format!("The events `{name}` emits.");
+            let union = union(&input.vis, &event_enum, list, &doc, Kind::Events);
+            (union, quote!(#event_enum), quote!(::std::option::Option::None))
+        }
+        None => (quote!(), quote!(#input_enum), quote!(::std::option::Option::Some(input.clone()))),
+    };
+
+    let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
+    let consumes = sources.iter().map(|(source, list)| {
+        let variants = list.iter().map(last_ident);
+        let key_expr = if key_of.iter().any(|path| last_ident(path) == last_ident(source)) {
+            quote!(<Self as ::domain::KeyOf<#source>>::key_of(::domain::Origin { id, state }, &input)?)
+        } else {
+            quote_spanned!(source.span() =>
+                <#key as ::domain::KeyFrom<<#source as ::domain::Source>::SourceId>>::key_from(id))
+        };
+        quote! {
+            impl ::domain::Consumes<#source> for #name {
+                #[allow(clippy::question_mark)]
+                fn route(
+                    id: &<#source as ::domain::Source>::SourceId,
+                    event: &<#source as ::domain::Source>::SourceEvent,
+                    state: &<#source as ::domain::Source>::SourceState,
+                ) -> ::std::option::Option<(#key, #input_enum)> {
+                    let _ = state;
+                    let input = #(
+                        if let ::std::option::Option::Some(e) =
+                            <<#source as ::domain::Source>::SourceEvent as ::domain::Member<#list>>::get(event)
+                        {
+                            #input_enum::#variants(::std::clone::Clone::clone(e))
+                        } else
+                    )* {
+                        return ::std::option::Option::None;
+                    };
+                    let key = #key_expr;
+                    ::std::option::Option::Some((key, input))
+                }
+            }
+        }
+    });
+
+    Ok(quote! {
+        #input_union
+        #event_union
+
+        impl ::domain::View for #name {
+            const NAME: &'static str = #tag;
+            type Key = #key;
+            type State = #state;
+            type Input = #input_enum;
+            type Event = #event_ty;
+
+            fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
+                #( sources.source::<#source_paths>(); )*
+            }
+
+            fn auto_emit(input: &#input_enum) -> ::std::option::Option<#event_ty> {
+                #auto_emit
+            }
+        }
+
+        impl ::domain::Source for #name {
+            type SourceId = #key;
+            type SourceEvent = #event_ty;
+            type SourceState = #state;
+
+            fn register_source<__R: ::domain::Registry>(registry: &mut __R) {
+                registry.view::<Self>();
+            }
+        }
+
+        #( #consumes )*
+
+        const _: () = {
+            #[allow(dead_code)]
+            fn checks() {
+                ::domain::__assert_apply::<#name>();
+            }
+        };
+    })
+}
+
+fn model(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut aggregates, mut views) = (Vec::new(), Vec::new());
+    parse_attr(input, "model", |meta| {
+        if meta.path.is_ident("aggregates") {
+            aggregates = paths(&meta)?;
+        } else if meta.path.is_ident("views") {
+            views = paths(&meta)?;
+        } else {
+            return Err(meta.error("expected `aggregates` or `views`"));
+        }
+        Ok(())
+    })?;
+    let tag = name.to_string();
+    Ok(quote! {
+        impl ::domain::Model for #name {
+            const NAME: &'static str = #tag;
+
+            fn register<__R: ::domain::Registry>(registry: &mut __R) {
+                #( registry.aggregate::<#aggregates>(); )*
+                #( registry.view::<#views>(); )*
+            }
+        }
     })
 }
 
@@ -185,8 +379,20 @@ fn union(vis: &Visibility, name: &Ident, members: &[Path], doc: &str, kind: Kind
         Kind::Events => (quote!(::domain::Event), quote!(::domain::Events)),
         Kind::Rejections => (quote!(::domain::Rejection), quote!(::domain::Rejections)),
     };
-    let error_impls = match kind {
-        Kind::Events => quote!(),
+    let kind_impls = match kind {
+        Kind::Events => quote! {
+            #(
+                impl ::domain::Member<#members> for #name {
+                    #[allow(unreachable_patterns)]
+                    fn get(&self) -> ::std::option::Option<&#members> {
+                        match self {
+                            Self::#variants(member) => ::std::option::Option::Some(member),
+                            _ => ::std::option::Option::None,
+                        }
+                    }
+                }
+            )*
+        },
         Kind::Rejections => quote! {
             impl ::std::fmt::Display for #name {
                 fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
@@ -218,7 +424,7 @@ fn union(vis: &Visibility, name: &Ident, members: &[Path], doc: &str, kind: Kind
             }
         }
 
-        #error_impls
+        #kind_impls
     }
 }
 

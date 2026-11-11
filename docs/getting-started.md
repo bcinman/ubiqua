@@ -102,12 +102,44 @@ $ cargo run -p bank
 deposited 100, balance 100
 withdrew 30, balance 70
 withdraw 500: rejected: InsufficientFunds { balance: 70, requested: 500 }
-Account/sam-main #1: AccountOpened(AccountOpened { owner: "sam" })
-Account/sam-main #2: MoneyDeposited(MoneyDeposited { amount: 100, balance_after: 100 })
-Account/sam-main #3: MoneyWithdrawn(MoneyWithdrawn { amount: 30, balance_after: 70 })
+summary: Summary { owner: Some("sam"), balance: 70 }
+sam holds 570 across {AccountId("sam-main"): 70, AccountId("sam-savings"): 500}
+statement caught up at 0
+statement #1: StatementLine(StatementLine { kind: Deposit, amount: 100, balance: 100 })
+statement #2: StatementLine(StatementLine { kind: Withdrawal, amount: 30, balance: 70 })
 ```
 
-## 6. Test it with a story
+## 6. Add a view
+
+```rust
+#[derive(View)]
+#[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
+pub struct AccountSummary;
+
+impl Apply for AccountSummary {
+    fn apply(summary: &mut Summary, input: AccountSummaryInput, _: &mut ViewCx<Self>) {
+        match input {
+            AccountSummaryInput::AccountOpened(e) => summary.owner = Some(e.owner),
+            AccountSummaryInput::MoneyDeposited(e) => summary.balance = e.balance_after,
+            AccountSummaryInput::MoneyWithdrawn(e) => summary.balance = e.balance_after,
+        }
+    }
+}
+
+#[derive(Model)]
+#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
+pub struct Bank;
+```
+
+```rust
+let bank = Memory::new().with::<Bank>();
+let receipt = bank.send(&sam, WithdrawMoney { amount: 30 }).unwrap();
+let summary = bank.view::<AccountSummary>().at_least(&receipt).unwrap().get(&sam);
+```
+
+`Statement`, `OwnerHoldings` (built on the summaries) and the rest are in [`views.rs`](../examples/bank/src/views.rs). More in [Views](views.md).
+
+## 7. Test it with a story
 
 ```rust
 #[test]

@@ -60,7 +60,12 @@ pub struct StreamId(String);
 
 impl StreamId {
     pub fn of<A: Aggregate>(id: &A::Id) -> Self {
-        Self(format!("{}/{}", A::NAME, id))
+        Self::new(A::NAME, id)
+    }
+
+    /// `name/key`, such as a view key's stream of emitted events: `Statement/a-1`.
+    pub fn new(name: &str, key: impl fmt::Display) -> Self {
+        Self(format!("{name}/{key}"))
     }
 
     pub fn as_str(&self) -> &str {

@@ -113,3 +113,86 @@
 //! #[aggregate(id = DoorId, state = bool, events(Closed), commands())]
 //! pub struct Door;
 //! ```
+//!
+//! ## Views
+//!
+//! A view that reads an event its source never records:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Opened;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Opened)))]
+//! pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! ```
+//!
+//! A view keyed by something other than its source's id, without `key_of`:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # domain::id!(pub struct HouseId;);
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! #[derive(View)]
+//! #[view(key = HouseId, from(Door(Closed)))]
+//! pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! ```
+//!
+//! A view without `Apply`:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed)))]
+//! pub struct Log;
+//! ```
+//!
+//! The same view with `Apply` compiles:
+//!
+//! ```
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed)))]
+//! pub struct Log;
+//!
+//! impl Apply for Log {
+//!     fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {}
+//! }
+//! ```
+//!
+//! A view that reads an event another view doesn't emit:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Opened;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed, Opened), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! // Reads Closed only, so emits Closed only.
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed)))]
+//! pub struct Closings;
+//! # impl Apply for Closings { fn apply(_: &mut (), _: ClosingsInput, _: &mut ViewCx<Self>) {} }
+//!
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Closings(Opened)))]
+//! pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! ```

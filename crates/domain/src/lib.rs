@@ -8,6 +8,7 @@ extern crate self as domain;
 
 mod maybe;
 mod values;
+mod view;
 
 #[doc(hidden)]
 pub mod compile_checks;
@@ -15,9 +16,13 @@ pub mod compile_checks;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
-pub use domain_macros::{Aggregate, Command, Event, Rejection};
+pub use domain_macros::{Aggregate, Command, Event, Model, Rejection, View};
 pub use maybe::{MaybeSend, MaybeSync};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
+pub use view::{
+    Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Member, Model, NotCaughtUp, Origin, Position, Registry,
+    Snapshot, Source, SourcePayload, Sources, View, ViewCx,
+};
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.
 pub trait Event: Clone + Debug + PartialEq + MaybeSend + MaybeSync + 'static {
@@ -181,3 +186,6 @@ pub fn __assert_handles<A: Handles<C>, C: Command>() {}
 
 #[doc(hidden)]
 pub fn __assert_evolve<A: Evolve>() {}
+
+#[doc(hidden)]
+pub fn __assert_apply<V: Apply>() {}

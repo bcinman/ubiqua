@@ -25,6 +25,8 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.rejected(r)` | the command was refused with exactly `r` |
 | `.replied(reply)` | the command's reply |
 | `.at(timestamp)` | sets the clock for the next command |
+| `.view::<V>(&key, state)` | a view's state for one key |
+| `.emitted::<V>(&key, [events])` | every event a view emitted for one key |
 
 ## Success
 
@@ -46,6 +48,25 @@ Story::new()
     .when(&a1(), WithdrawMoney { amount: 80 })
     .rejected(InsufficientFunds { balance: 20, requested: 80 });
 ```
+
+## Views
+
+```rust
+Story::new()
+    .with::<Bank>()                                  // run the model's views
+    .given(&a1(), [opened()])
+    .when(&a1(), DepositMoney { amount: 100 })
+    .then(&a1(), [MoneyDeposited { amount: 100, balance_after: 100 }])
+    .when(&a1(), WithdrawMoney { amount: 30 })
+    .then(&a1(), [MoneyWithdrawn { amount: 30, balance_after: 70 }])
+    .view::<AccountSummary>(&a1(), Summary { owner: Some("sam".into()), balance: 70 })
+    .emitted::<Statement>(&a1(), [
+        StatementLine { kind: LineKind::Deposit, amount: 100, balance: 100 },
+        StatementLine { kind: LineKind::Withdrawal, amount: 30, balance: 70 },
+    ]);
+```
+
+`given` events reach the views too.
 
 ## Time
 

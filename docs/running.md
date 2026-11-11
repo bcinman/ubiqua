@@ -1,12 +1,13 @@
 # Running a model
 
-`Memory` runs every aggregate in memory. No setup, no registration.
+`Memory` runs every aggregate in memory. Aggregates need no setup; views come from a model.
 
 ```rust
 use domain_memory::Memory;
 
-let bank = Memory::new();
+let bank = Memory::new().with::<Bank>();
 let receipt = bank.send(&sam, DepositMoney { amount: 100 })?;
+let summary = bank.view::<AccountSummary>().get(&sam);
 ```
 
 ## What `send` returns
@@ -53,9 +54,17 @@ Err(SendError::CommandIdReused { stream, command_id })
 
 ## All or nothing
 
-A command's events, new state and receipt commit together. A rejection records nothing; so does a panic in `evolve` or `reply`.
+A command's events, new state, receipt and deliveries to views commit together. A rejection records nothing; so does a panic in `evolve` or `reply`.
+
+```diagram
+send ──▶ decide ──▶ commit ──────────────────▶ apply to views ──▶ return receipt
+                    events, state, receipt,     in order,
+                    queued deliveries           after the commit
+```
 
 ## Read
+
+Views: see [Views](views.md#read-it). The aggregates themselves:
 
 ```rust
 bank.state(&sam);     // AccountState::Open { owner: "sam", balance: 70 }

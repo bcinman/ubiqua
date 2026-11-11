@@ -15,34 +15,37 @@ let refused = bank.send(&sam, WithdrawMoney { amount: 500 });
 ```
 
 ```diagram
-command ──▶ aggregate ──▶ events
-             decide        recorded, never changed
-             evolve        state is a fold of them
+command ──▶ aggregate ──▶ events ──▶ views
+             decide        recorded,   answer reads:
+             evolve        never       get, list,
+                           changed     live feeds
 ```
 
 - A **command** asks for a change: `WithdrawMoney { amount: 30 }`.
 - An **aggregate** decides it against its state and returns **events** or a **rejection**.
 - **Events** are the record. The state is rebuilt from them.
+- A **view** folds events into what people read: a balance, a statement.
 
 ## Guides
 
 1. [Getting started](getting-started.md): build the bank in `examples/bank`.
 2. [Commands and events](commands.md): declare what a command asks for and how it can end.
 3. [Aggregates](aggregates.md): state, `evolve`, `decide`, `reply`.
-4. [Running a model](running.md): `Memory`, retries, threads, the web.
-5. [Stories](stories.md): test rules as given, when, then.
-6. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+4. [Views](views.md): read models, live feeds, reading your own write.
+5. [Running a model](running.md): `Memory`, retries, threads, the web.
+6. [Stories](stories.md): test rules as given, when, then.
+7. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
 
 ## Crates
 
 | Crate | What it holds |
 | --- | --- |
-| `domain` | traits, derives, `Receipt`, `Envelope`. No runtime. |
-| `domain-memory` | `Memory`: runs a model in memory. |
+| `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
+| `domain-memory` | `Memory`: runs a model and its views in memory. |
 | `domain-story` | `Story`: given, when, then. |
 
 No UI framework and no async runtime. Everything builds for `wasm32-unknown-unknown`.
 
 ## Not yet
 
-Views, policies, projections, sagas, persistence, the client and server. See the design sketch's build order.
+Policies, projections, sagas, persistence, the client and server. See the design sketch's build order.

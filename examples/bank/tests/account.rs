@@ -45,3 +45,37 @@ fn each_withdrawal_is_decided_against_the_balance_the_last_one_left() {
         .when(&a1(), WithdrawMoney { amount: 80 })
         .rejected(InsufficientFunds { balance: 20, requested: 80 });
 }
+
+#[test]
+fn the_summary_and_statement_follow_the_account() {
+    Story::new()
+        .with::<Bank>()
+        .given(&a1(), [opened()])
+        .when(&a1(), DepositMoney { amount: 100 })
+        .then(&a1(), [MoneyDeposited { amount: 100, balance_after: 100 }])
+        .when(&a1(), WithdrawMoney { amount: 30 })
+        .then(&a1(), [MoneyWithdrawn { amount: 30, balance_after: 70 }])
+        .view::<AccountSummary>(&a1(), Summary { owner: Some("sam".into()), balance: 70 })
+        .emitted::<Statement>(
+            &a1(),
+            [
+                StatementLine { kind: LineKind::Deposit, amount: 100, balance: 100 },
+                StatementLine { kind: LineKind::Withdrawal, amount: 30, balance: 70 },
+            ],
+        );
+}
+
+#[test]
+fn an_owner_sees_every_account_they_hold() {
+    let savings = AccountId::new("a-2");
+    Story::new()
+        .with::<Bank>()
+        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 50, balance_after: 50 }.into()])
+        .given(&savings, [opened()])
+        .when(&savings, DepositMoney { amount: 200 })
+        .then(&savings, [MoneyDeposited { amount: 200, balance_after: 200 }])
+        .view::<OwnerHoldings>(
+            &OwnerId::new("sam"),
+            Holdings { balances: [(a1(), 50), (savings.clone(), 200)].into_iter().collect() },
+        );
+}

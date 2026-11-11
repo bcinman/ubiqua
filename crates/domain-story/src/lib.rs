@@ -3,7 +3,9 @@
 //! A story runs the real model in memory and must account for everything it does. It panics when a
 //! command records events no `then` checks, or is rejected and no `rejected` checks it.
 
-use domain::{Aggregate, AggregateId, Command, Evolve, Handles, Receipt, SendError, StreamId, Timestamp};
+use domain::{
+    Aggregate, AggregateId, Apply, Command, Cursor, Evolve, Handles, Model, Receipt, SendError, StreamId, Timestamp,
+};
 use domain_memory::Memory;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +35,12 @@ impl Story {
         let now = clock.clone();
         let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::Relaxed)));
         Self { memory, clock, seen: HashMap::new() }
+    }
+
+    /// Runs the model's views too, so `view` and `emitted` can check them.
+    pub fn with<M: Model>(self) -> Self {
+        let Story { memory, clock, seen } = self;
+        Story { memory: memory.with::<M>(), clock, seen }
     }
 
     /// History: events already recorded on `id`, written without deciding any command.
@@ -132,6 +140,22 @@ impl<C: Command> When<C> {
             Ok(receipt) => assert_eq!(receipt.reply, reply, "{} replied", C::NAME),
             Err(error) => panic!("{} failed: {error:?}, expected reply {reply:?}", C::NAME),
         }
+        self
+    }
+
+    /// Checks a view's state for one key.
+    pub fn view<V: Apply>(self, key: &V::Key, expected: V::State) -> Self {
+        let actual = self.story.memory.view::<V>().get(key);
+        assert_eq!(actual.as_ref(), Some(&expected), "{} for {key:?}", V::NAME);
+        self
+    }
+
+    /// Checks every event a view has emitted for one key, oldest first.
+    pub fn emitted<V: Apply>(self, key: &V::Key, expected: impl IntoIterator<Item = impl Into<V::Event>>) -> Self {
+        let entries = self.story.memory.view::<V>().list(key, Cursor::START, usize::MAX);
+        let actual: Vec<V::Event> = entries.into_iter().map(|entry| entry.event).collect();
+        let expected: Vec<V::Event> = expected.into_iter().map(Into::into).collect();
+        assert_eq!(actual, expected, "{} emitted for {key:?}", V::NAME);
         self
     }
 

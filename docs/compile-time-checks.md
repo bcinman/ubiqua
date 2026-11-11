@@ -71,6 +71,50 @@ memory.send(&CustomerId::new("c-1"), DepositMoney { amount: 1 });
 error[E0271]: type mismatch resolving `<DepositMoney as Command>::Target == CustomerId`
 ```
 
+## A view reads an event its source never records
+
+```rust
+#[view(key = DoorId, from(Door(Opened)))]   // Door records Closed only
+pub struct Log;
+```
+
+```text
+error[E0277]: `Opened` isn't one of the events in `DoorEvent`
+  this source doesn't record `Opened`
+```
+
+## A view reads an event its source view doesn't emit
+
+```rust
+#[view(key = DoorId, from(Door(Closed)))]   // emits Closed only
+pub struct Closings;
+
+#[view(key = DoorId, from(Closings(Opened)))]
+pub struct Log;
+```
+
+```text
+error[E0277]: `Opened` isn't one of the events in `ClosingsInput`
+```
+
+## A view keyed by something else, without `key_of`
+
+```rust
+#[view(key = HouseId, from(Door(Closed)))]
+pub struct Log;
+```
+
+```text
+error[E0277]: a `DoorId` source can't key a view keyed by `HouseId`
+  list this source in `key_of(..)` and implement `KeyOf` for it
+```
+
+## A view without `Apply`
+
+```text
+error[E0277]: `Log` has no `impl Apply`
+```
+
 ## A missing attribute
 
 ```rust

@@ -120,4 +120,4 @@ A rule that spans instances gets its own aggregate. "Usernames are unique" is ab
 pub struct UsernameClaim;
 ```
 
-Next: [Running a model](running.md).
+Next: [Views](views.md).

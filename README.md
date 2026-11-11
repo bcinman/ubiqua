@@ -14,4 +14,4 @@ cargo run -p bank     # the example in examples/bank
 cargo test            # stories, host tests, compile-time checks
 ```
 
-Read the [docs](docs/README.md).
+Read the [docs](docs/README.md). `cd site && npm install && npm run dev` serves them as a site, with each crate's rustdoc.

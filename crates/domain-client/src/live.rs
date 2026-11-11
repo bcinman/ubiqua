@@ -99,6 +99,15 @@ impl<T> Shared<T> {
     }
 }
 
+impl<T: PartialEq> Shared<T> {
+    /// Like [`publish`](Self::publish), unless the value is already `value`.
+    pub(crate) fn publish_if_changed(&self, value: T) {
+        if *lock(&self.inner).value != value {
+            self.publish(value);
+        }
+    }
+}
+
 /// An [`on_change`](LiveView::on_change) callback. Dropping it unsubscribes.
 pub struct Listener<T> {
     shared: Arc<Shared<T>>,

@@ -8,7 +8,7 @@
 //! server.wait();
 //! ```
 //!
-//! Plain threads, no async runtime: one pair per connection. The protocol is [`domain::wire`].
+//! Plain threads, no async runtime: one pair per connection. [`Server::tls`] serves `wss://`. The protocol is [`domain::wire`].
 
 use domain::wire::{self, At, Body, Failure, Op, Request, Response};
 use domain::{
@@ -16,7 +16,7 @@ use domain::{
     StreamId, Validate, View,
 };
 use domain_memory::{Feed, Memory, Watch};
-use domain_websocket::{Message, Writer};
+use domain_websocket::{Message, ServerTls, Writer};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -39,6 +39,7 @@ pub struct Server<A: Api> {
     memory: Arc<Memory>,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
+    tls: Option<ServerTls>,
     _api: PhantomData<fn() -> A>,
 }
 
@@ -51,7 +52,15 @@ impl<A: Api> Server<A> {
         let mut registrar = Registrar { memory: &memory, routes: Routes::default() };
         A::register(&mut registrar);
         let routes = Arc::new(registrar.routes);
-        Self { memory, routes, sessions: None, _api: PhantomData }
+        Self { memory, routes, sessions: None, tls: None, _api: PhantomData }
+    }
+
+    /// Serves `wss://` with this certificate, so connections are encrypted and clients can check
+    /// they reached this server. Do this, or serve behind a proxy that does, whenever clients
+    /// connect over the internet: their tokens travel on the connection.
+    pub fn tls(mut self, tls: ServerTls) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Signs each connection in. `check` gets the token the client connected with and returns who
@@ -78,6 +87,7 @@ impl<A: Api> Server<A> {
             next: AtomicU64::new(0),
         });
         let wake = run_due(self.memory.clone());
+        let scheme = if self.tls.is_some() { "wss" } else { "ws" };
         let accepting = shared.clone();
         let accept = std::thread::Builder::new().name("domain-server".into()).spawn(move || {
             for stream in listener.incoming() {
@@ -89,6 +99,7 @@ impl<A: Api> Server<A> {
                     memory: self.memory.clone(),
                     routes: self.routes.clone(),
                     sessions: self.sessions.clone(),
+                    tls: self.tls.clone(),
                     shared: accepting.clone(),
                 };
                 let _ = std::thread::Builder::new()
@@ -96,13 +107,14 @@ impl<A: Api> Server<A> {
                     .spawn(move || connection.serve(stream));
             }
         })?;
-        Ok(Listening { addr, shared, accept: Some(accept), _wake: wake })
+        Ok(Listening { addr, scheme, shared, accept: Some(accept), _wake: wake })
     }
 }
 
 /// A running server. Stops when dropped.
 pub struct Listening {
     addr: SocketAddr,
+    scheme: &'static str,
     shared: Arc<Shared>,
     accept: Option<std::thread::JoinHandle<()>>,
     /// Keeps the policy thread running; dropping it stops that thread.
@@ -114,9 +126,9 @@ impl Listening {
         self.addr
     }
 
-    /// `ws://addr/`, for `Client::connect`.
+    /// `ws://addr/`, or `wss://addr/` with [`Server::tls`], for `Client::connect`.
     pub fn url(&self) -> String {
-        format!("ws://{}/", self.addr)
+        format!("{}://{}/", self.scheme, self.addr)
     }
 
     /// Serves until the process ends.
@@ -446,16 +458,21 @@ struct Connection {
     memory: Arc<Memory>,
     routes: Arc<Routes>,
     sessions: Option<Sessions>,
+    tls: Option<ServerTls>,
     shared: Arc<Shared>,
 }
 
 impl Connection {
     fn serve(self, stream: TcpStream) {
         let sessions = self.sessions.clone();
-        let accepted = domain_websocket::accept(stream, |request| match &sessions {
+        let check = |request: &domain_websocket::Request| match &sessions {
             None => Ok(None),
             Some(check) => request.bearer().and_then(|token| check(token)).map(Some).ok_or(401),
-        });
+        };
+        let accepted = match &self.tls {
+            Some(tls) => domain_websocket::accept_tls(stream, tls, check),
+            None => domain_websocket::accept(stream, check),
+        };
         let Ok((actor, mut reader, mut writer)) = accepted else { return };
         let number = self.shared.next.fetch_add(1, Ordering::Relaxed);
         if let Ok(closer) = writer.try_clone() {

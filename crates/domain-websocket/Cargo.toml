@@ -1,9 +1,11 @@
 [package]
 name = "domain-websocket"
-description = "WebSocket over std::net for domain-server and domain-client: the handshake and text messages, on plain threads."
+description = "WebSocket over std::net for domain-server and domain-client: the handshake and text messages, plain or over TLS, on plain threads."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 sha1_smol = "1.0.1"

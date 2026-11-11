@@ -179,6 +179,18 @@ error[E0277]: `HalfLocks` doesn't answer `Unlock`
 
 Both checks are in [`domain-client`'s `compile_checks.rs`](../crates/domain-client/src/compile_checks.rs).
 
+## A prediction with no `Predict`
+
+```rust
+#[view(key = AccountId, from(Account(..)), state = Summary, predicts(DepositMoney))]
+pub struct AccountSummary;
+// no impl Predict<DepositMoney> for AccountSummary
+```
+
+```text
+error[E0277]: `AccountSummary` lists `DepositMoney` in `predicts(..)` but has no `impl Predict<DepositMoney>`
+```
+
 ## A missing attribute
 
 ```rust

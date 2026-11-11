@@ -1,16 +1,21 @@
 //! WebSocket over `std::net`, for `domain-server` and `domain-client`: the opening handshake, and
-//! text messages in frames. No async runtime.
+//! text messages in frames, plain (`ws://`) or over TLS (`wss://`). No async runtime.
 //!
 //! A connection splits into a [`Reader`] and a [`Writer`] on the same socket, so one thread can
 //! wait for messages while others send. Pings come back from [`Reader::read`]; answer them with
 //! [`Writer::pong`].
 
+mod tls;
+
+pub use tls::{ClientTls, ServerTls};
+
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tls::{Input, Output};
 
 /// The largest message either side accepts.
 pub const MAX_MESSAGE: usize = 16 << 20;
@@ -76,9 +81,29 @@ impl From<io::Error> for ConnectError {
 /// Server side: reads the client's request, asks `check` whether to accept it, and answers.
 /// `check` returns what to keep from the request, or the HTTP status to refuse it with.
 pub fn accept<T>(stream: TcpStream, check: impl FnOnce(&Request) -> Result<T, u16>) -> io::Result<(T, Reader, Writer)> {
-    let mut reader = Reader::new(stream.try_clone()?, Role::Server);
+    let (input, output) = tls::split(stream, None)?;
+    accept_on(input, output, check)
+}
+
+/// Like [`accept`], for `wss://`: the TLS handshake first, with `tls`'s certificate.
+pub fn accept_tls<T>(
+    mut stream: TcpStream,
+    tls: &ServerTls,
+    check: impl FnOnce(&Request) -> Result<T, u16>,
+) -> io::Result<(T, Reader, Writer)> {
+    let session = tls::server(tls, &mut stream)?;
+    let (input, output) = tls::split(stream, Some(session))?;
+    accept_on(input, output, check)
+}
+
+fn accept_on<T>(
+    input: Input,
+    output: Output,
+    check: impl FnOnce(&Request) -> Result<T, u16>,
+) -> io::Result<(T, Reader, Writer)> {
+    let mut reader = Reader::new(input, Role::Server);
     let head = reader.read_head()?;
-    let mut writer = Writer { stream, role: Role::Server };
+    let mut writer = Writer { stream: output, role: Role::Server };
     let refuse = |writer: &mut Writer, status: u16| -> io::Error {
         let reason = match status {
             400 => "Bad Request",
@@ -105,18 +130,43 @@ pub fn accept<T>(stream: TcpStream, check: impl FnOnce(&Request) -> Result<T, u1
         writer.stream,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
-    writer.stream.set_nodelay(true)?;
+    writer.stream.set_nodelay()?;
     Ok((kept, reader, writer))
 }
 
-/// Client side: connects to `ws://host:port/path`, sending `headers` with the request.
+/// Client side: connects to `ws://host:port/path`, or `wss://..` over TLS, trusting the
+/// servers the system trusts. Sends `headers` with the request.
 pub fn connect(url: &str, headers: &[(&str, &str)]) -> Result<(Reader, Writer), ConnectError> {
+    connect_with(url, headers, None)
+}
+
+/// Like [`connect`], trusting the servers `tls` trusts on `wss://`.
+pub fn connect_with(
+    url: &str,
+    headers: &[(&str, &str)],
+    tls: Option<&ClientTls>,
+) -> Result<(Reader, Writer), ConnectError> {
     let invalid = |why: &str| ConnectError::Io(io::Error::new(io::ErrorKind::InvalidInput, format!("{url}: {why}")));
-    let rest = url.strip_prefix("ws://").ok_or_else(|| invalid("only ws:// URLs are supported"))?;
+    let (secure, rest) = match (url.strip_prefix("wss://"), url.strip_prefix("ws://")) {
+        (Some(rest), _) => (true, rest),
+        (_, Some(rest)) => (false, rest),
+        _ => return Err(invalid("only ws:// and wss:// URLs are supported")),
+    };
     let (host, path) = rest.split_once('/').map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
-    let addr = if host.contains(':') { host.to_string() } else { format!("{host}:80") };
-    let stream = TcpStream::connect(addr.to_socket_addrs()?.next().ok_or_else(|| invalid("no address"))?)?;
+    let addr = if host.contains(':') { host.to_string() } else { format!("{host}:{}", if secure { 443 } else { 80 }) };
+    let mut stream = TcpStream::connect(addr.to_socket_addrs()?.next().ok_or_else(|| invalid("no address"))?)?;
     stream.set_nodelay(true)?;
+    let session = if secure {
+        let tls = match tls {
+            Some(tls) => tls.clone(),
+            None => ClientTls::system()?,
+        };
+        let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
+        Some(tls::client(&tls, name, &mut stream)?)
+    } else {
+        None
+    };
+    let (input, output) = tls::split(stream, session)?;
     let key = base64(&random_bytes::<16>());
     let mut request = format!(
         "GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
@@ -125,9 +175,9 @@ pub fn connect(url: &str, headers: &[(&str, &str)]) -> Result<(Reader, Writer), 
         request.push_str(&format!("{name}: {value}\r\n"));
     }
     request.push_str("\r\n");
-    let mut writer = Writer { stream: stream.try_clone()?, role: Role::Client };
+    let mut writer = Writer { stream: output, role: Role::Client };
     writer.stream.write_all(request.as_bytes())?;
-    let mut reader = Reader::new(stream, Role::Client);
+    let mut reader = Reader::new(input, Role::Client);
     let head = reader.read_head()?;
     let head = String::from_utf8_lossy(&head);
     let status = head.split(' ').nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
@@ -149,13 +199,13 @@ enum Role {
 
 /// Reads messages from one connection.
 pub struct Reader {
-    stream: TcpStream,
+    stream: Input,
     role: Role,
     buf: Vec<u8>,
 }
 
 impl Reader {
-    fn new(stream: TcpStream, role: Role) -> Self {
+    fn new(stream: Input, role: Role) -> Self {
         Self { stream, role, buf: Vec::new() }
     }
 
@@ -266,7 +316,7 @@ impl Reader {
 
 /// Sends messages on one connection.
 pub struct Writer {
-    stream: TcpStream,
+    stream: Output,
     role: Role,
 }
 
@@ -286,12 +336,13 @@ impl Writer {
     /// Says goodbye, then closes the socket, which also ends a [`Reader::read`] waiting on it.
     pub fn close(&mut self) {
         let _ = self.frame(0x8, &[]);
+        self.stream.close_notify();
         self.shutdown();
     }
 
     /// Closes the socket without a goodbye.
     pub fn shutdown(&self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
+        self.stream.shutdown();
     }
 
     /// A second writer for the same connection. Frames from two writers must not overlap, so
@@ -396,14 +447,56 @@ mod tests {
         assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 
+    const CA: &[u8] = include_bytes!("../tests/certs/ca.pem");
+
+    fn server_tls() -> ServerTls {
+        ServerTls::from_pem(
+            include_bytes!("../tests/certs/server.pem"),
+            include_bytes!("../tests/certs/server-key.pem"),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn messages_of_every_length_cross_both_ways() {
+        round_trip(None);
+    }
+
+    #[test]
+    fn messages_of_every_length_cross_both_ways_over_tls() {
+        round_trip(Some(server_tls()));
+    }
+
+    #[test]
+    fn a_client_refuses_a_server_it_doesnt_trust() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("ws://{}/live", listener.local_addr().unwrap());
+        let url = format!("wss://localhost:{}/", listener.local_addr().unwrap().port());
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let (token, mut reader, mut writer) =
-                accept(stream, |r| Ok((r.path.clone(), r.bearer().map(String::from)))).unwrap();
+            assert!(accept_tls(stream, &server_tls(), |_| Ok(())).is_err());
+        });
+        let other = ClientTls::trusting(include_bytes!("../tests/certs/server.pem")).unwrap();
+        let refused = connect_with(&url, &[], Some(&other)).err().expect("not trusted");
+        assert!(refused.to_string().contains("certificate"), "{refused}");
+        server.join().unwrap();
+    }
+
+    /// Echoes a client's messages back, plain or over TLS.
+    fn round_trip(tls: Option<ServerTls>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = match tls {
+            Some(_) => format!("wss://localhost:{port}/live"),
+            None => format!("ws://127.0.0.1:{port}/live"),
+        };
+        let secure = tls.is_some();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let check = |r: &Request| Ok((r.path.clone(), r.bearer().map(String::from)));
+            let (token, mut reader, mut writer) = match &tls {
+                Some(tls) => accept_tls(stream, tls, check).unwrap(),
+                None => accept(stream, check).unwrap(),
+            };
             assert_eq!(token, ("/live".to_string(), Some("t-1".to_string())));
             // Echo, answering pings, until the client says goodbye.
             loop {
@@ -415,8 +508,10 @@ mod tests {
                 }
             }
         });
-        let (mut reader, mut writer) = connect(&url, &[("Authorization", "Bearer t-1")]).unwrap();
-        for len in [0, 1, 125, 126, 127, 65_535, 65_536, 200_000] {
+        let trusted = ClientTls::trusting(CA).unwrap();
+        let tls = secure.then_some(&trusted);
+        let (mut reader, mut writer) = connect_with(&url, &[("Authorization", "Bearer t-1")], tls).unwrap();
+        for len in [0, 1, 125, 126, 127, 65_535, 65_536, 200_000, 3_000_000] {
             let text: String = (0..len).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
             writer.text(&text).unwrap();
             assert_eq!(reader.read().unwrap(), Message::Text(text), "length {len}");

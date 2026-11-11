@@ -41,7 +41,7 @@ pub use projection::{Projection, Saga, WidenRejection};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
     Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Keyed, Member, Model, NotCaughtUp, Origin, Position,
-    Registry, Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
+    Predict, Predictions, Registry, Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
 };
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.

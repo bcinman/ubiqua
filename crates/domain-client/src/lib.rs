@@ -9,6 +9,7 @@
 
 mod live;
 mod pending;
+mod predict;
 #[cfg(not(target_arch = "wasm32"))]
 mod remote;
 
@@ -16,6 +17,8 @@ mod remote;
 pub mod compile_checks;
 
 pub use domain_memory::{Feed, Recv, Subscription};
+#[cfg(not(target_arch = "wasm32"))]
+pub use domain_websocket::ClientTls;
 pub use live::{Changed, Listener, LiveView};
 pub use pending::Pending;
 
@@ -26,6 +29,7 @@ use domain::{
 use domain_memory::{Memory, Publisher, ViewReader, Watch};
 use live::Shared;
 use pending::{lock, pending};
+use predict::{Overlay, Predictor};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,12 +51,19 @@ pub type Read<V> = ReadResult<V, Option<<V as View>::State>>;
 pub struct Client<A: Api> {
     backend: Backend,
     actor: Option<CurrentActor>,
+    /// Shared by clones, so a command sent through one shows on another's live views.
+    predictor: Arc<Predictor>,
     _api: PhantomData<fn() -> A>,
 }
 
 impl<A: Api> Clone for Client<A> {
     fn clone(&self) -> Self {
-        Self { backend: self.backend.clone(), actor: self.actor.clone(), _api: PhantomData }
+        Self {
+            backend: self.backend.clone(),
+            actor: self.actor.clone(),
+            predictor: self.predictor.clone(),
+            _api: PhantomData,
+        }
     }
 }
 
@@ -155,19 +166,30 @@ impl<A: Api> Client<A> {
     }
 
     fn local(memory: Arc<Memory>, runner: Runner) -> Self {
-        Self { backend: Backend::Local { memory, runner }, actor: None, _api: PhantomData }
+        Self { backend: Backend::Local { memory, runner }, actor: None, predictor: Arc::default(), _api: PhantomData }
     }
 
-    /// Talks to a model a `domain-server` serves at `url`, such as `ws://127.0.0.1:7878/`. The
-    /// server signs the connection in with `token`, if it checks sessions.
+    /// Talks to a model a `domain-server` serves at `url`, such as `ws://127.0.0.1:7878/`, or
+    /// `wss://bank.example.com/` over TLS, trusting the servers the system trusts. The server
+    /// signs the connection in with `token`, if it checks sessions.
     ///
     /// Returns at once and connects in the background, reconnecting whenever the connection
-    /// drops. Sends and reads made while it's down wait for it; those it was carrying when it
-    /// dropped fail with `Unavailable`. Live views and feeds carry on after a reconnect. Native
-    /// only for now.
+    /// drops. Commands sent while it's down, or that it was carrying when it dropped, wait and
+    /// are sent again once it's back, under the same command id, so each takes effect once; see
+    /// [`unsent`](Self::unsent). Reads it was carrying fail with `Unavailable`. Live views and
+    /// feeds carry on after a reconnect. Native only for now.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn connect(url: &str, token: Option<&str>) -> Self {
-        Self { backend: Backend::Remote(remote::Remote::start(url, token)), actor: None, _api: PhantomData }
+        let backend = Backend::Remote(remote::Remote::start(url, token, None));
+        Self { backend, actor: None, predictor: Arc::default(), _api: PhantomData }
+    }
+
+    /// Like [`connect`](Self::connect), trusting the servers `tls` trusts on `wss://`, such as a
+    /// server whose certificate your own authority signed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn connect_with(url: &str, token: Option<&str>, tls: ClientTls) -> Self {
+        let backend = Backend::Remote(remote::Remote::start(url, token, Some(tls)));
+        Self { backend, actor: None, predictor: Arc::default(), _api: PhantomData }
     }
 
     /// The same client, sending and reading on behalf of `actor`, as a signed-in user would.
@@ -193,7 +215,18 @@ impl<A: Api> Client<A> {
         }
     }
 
-    /// Sends a command. Retrying after [`SendError::Unavailable`] with
+    /// How many commands are waiting for an answer, such as while offline. Always 0 in process.
+    /// They're kept in memory, so quitting the app drops them.
+    pub fn unsent(&self) -> LiveView<usize> {
+        match &self.backend {
+            Backend::Local { .. } => LiveView::new(Shared::new(0), Arc::new(())),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Remote(remote) => remote.unsent(),
+        }
+    }
+
+    /// Sends a command. Live views of views that predict it (`#[view(predicts(..))]`) show its
+    /// change at once, until the answer arrives. Retrying after [`SendError::Unavailable`] with
     /// [`send_with_id`](Self::send_with_id) and the same id takes effect at most once.
     pub fn send<C>(&self, id: &C::Target, command: C) -> Pending<Sent<C>>
     where
@@ -247,7 +280,7 @@ impl<A: Api> Client<A> {
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Remote(remote) => ViewInner::Remote(remote.clone()),
         };
-        ClientView { inner }
+        ClientView { inner, predictor: self.predictor.clone() }
     }
 
     fn run<C>(
@@ -260,6 +293,12 @@ impl<A: Api> Client<A> {
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
+        // Taken off the live views once the answer is in, before `then` sees it.
+        let prediction = self.predictor.predict(id, &command);
+        let then = move |sent| {
+            drop(prediction);
+            then(sent);
+        };
         let (memory, runner) = match &self.backend {
             Backend::Local { memory, runner } => (memory, runner),
             #[cfg(not(target_arch = "wasm32"))]
@@ -312,6 +351,7 @@ impl<R: fmt::Debug + fmt::Display> std::error::Error for ReadError<R> {}
 /// Reads one view through a [`Client`].
 pub struct ClientView<V: Apply> {
     inner: ViewInner<V>,
+    predictor: Arc<Predictor>,
 }
 
 enum ViewInner<V: Apply> {
@@ -330,7 +370,7 @@ impl<V: Apply> Clone for ClientView<V> {
             #[cfg(not(target_arch = "wasm32"))]
             ViewInner::Remote(remote) => ViewInner::Remote(remote.clone()),
         };
-        Self { inner }
+        Self { inner, predictor: self.predictor.clone() }
     }
 }
 
@@ -417,6 +457,7 @@ impl<V: Apply + Validate> ClientView<V> {
 
     /// The key's state, kept current: what [`get`](Self::get) returns, as it changes. If
     /// `validate` refuses the reader, now or after a change, it holds the rejection and stops.
+    /// Commands the view predicts show at once, until their answers arrive.
     ///
     /// In process it starts at the state now. Over a connection it starts at `Ok(None)`, version
     /// 0, until the server's first answer arrives.
@@ -427,10 +468,12 @@ impl<V: Apply + Validate> ClientView<V> {
                 let initial = watch.try_next().expect("a watch starts with the state now").state;
                 let initial = checked::<V>(actor, key, initial);
                 let ended = AtomicBool::new(initial.is_err());
-                let target = Shared::new(initial);
+                let overlay = Overlay::<V>::new(key.clone(), initial);
+                self.predictor.register(&overlay);
+                let target = overlay.target();
                 let pump = Arc::new(Pump {
                     watch: Mutex::new(watch),
-                    target: target.clone(),
+                    overlay,
                     requested: AtomicBool::new(false),
                     key: key.clone(),
                     actor: actor.clone(),
@@ -447,7 +490,11 @@ impl<V: Apply + Validate> ClientView<V> {
                 live
             }
             #[cfg(not(target_arch = "wasm32"))]
-            ViewInner::Remote(remote) => remote.watch::<V>(key),
+            ViewInner::Remote(remote) => {
+                let overlay = Overlay::<V>::new(key.clone(), Ok(None));
+                self.predictor.register(&overlay);
+                remote.watch::<V>(key, overlay)
+            }
         }
     }
 }
@@ -468,7 +515,7 @@ fn checked<V: Validate>(actor: &Option<CurrentActor>, key: &V::Key, state: Optio
 /// held, from whichever thread committed the change.
 struct Pump<V: Apply> {
     watch: Mutex<Watch<V>>,
-    target: Arc<Shared<Read<V>>>,
+    overlay: Arc<Overlay<V>>,
     /// Set by a `pump` that found another one running; that one runs again for it.
     requested: AtomicBool,
     key: V::Key,
@@ -497,7 +544,7 @@ impl<V: Apply + Validate> Pump<V> {
             {
                 let read = checked::<V>(&self.actor, &self.key, state);
                 self.ended.store(read.is_err(), Ordering::SeqCst);
-                self.target.publish(read);
+                self.overlay.confirm(read);
             }
             drop(watch);
             if !self.requested.load(Ordering::SeqCst) {

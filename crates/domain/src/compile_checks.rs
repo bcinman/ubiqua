@@ -277,3 +277,20 @@
 //! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
 //! // no impl Validate for Log
 //! ```
+//!
+//! A view lists a command in `predicts(..)` but doesn't say how it changes the view:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Clone, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &bool) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed)), predicts(Close))]
+//! pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! // no impl Predict<Close> for Log
+//! ```

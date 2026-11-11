@@ -38,6 +38,7 @@ impl Apply for AccountSummary {
 | `from(Account(..))` | the source aggregate, and the events read from it |
 | `state = Summary` | `Default` is the state before the first event; omit for `()` |
 | `version = 1` | see [Change a view](#change-a-view); omit for `0` |
+| `predicts(DepositMoney)` | show a command before its answer; see [Offline and instant](offline.md) |
 
 The derive generates `AccountSummaryInput`, an enum of exactly the events listed. Other events pass by.
 

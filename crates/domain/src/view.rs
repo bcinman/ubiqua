@@ -59,6 +59,11 @@ pub trait View: Keyed {
     /// Calls `sources.source::<S>()` for each aggregate or view it reads.
     fn sources<S: Sources<Self>>(sources: &mut S);
 
+    /// Calls `predictions.predicts::<C>()` for each command it predicts: `#[view(predicts(..))]`.
+    fn predictions<P: Predictions<Self>>(predictions: &mut P) {
+        let _ = predictions;
+    }
+
     #[doc(hidden)]
     fn auto_emit(input: &Self::Input) -> Option<Self::Event>;
 }
@@ -68,6 +73,26 @@ pub trait View: Keyed {
 pub trait Apply: View {
     /// Update the key's state, and emit events with `cx.emit(..)`. Never fails: the input already happened.
     fn apply(state: &mut Self::State, input: Self::Input, cx: &mut ViewCx<'_, Self>);
+}
+
+/// How a command would change a view, so a client can show the change as soon as the command
+/// is sent, before the server answers. List the command in `#[view(predicts(..))]`, then
+/// implement this. Keep it pure: it runs on the client, on whatever state the client has.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` lists `{C}` in `predicts(..)` but has no `impl Predict<{C}>`",
+    label = "implement `Predict<{C}>` for `{Self}`"
+)]
+pub trait Predict<C: Command + Clone>: View {
+    /// Changes `state`, the state of `key`, the way `command` sent to `target` would. Leave it
+    /// as it is when the command doesn't touch this key. `None` is a key with no events yet.
+    fn predict(key: &Self::Key, state: &mut Option<Self::State>, target: &C::Target, command: &C);
+}
+
+/// Visits the commands a view predicts. Clients implement it.
+pub trait Predictions<V: View> {
+    fn predicts<C: Command + Clone>(&mut self)
+    where
+        V: Predict<C>;
 }
 
 /// Who may read a view's keys. A view with `rejects(..)` implements it; without, the derive does,

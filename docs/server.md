@@ -11,7 +11,7 @@ server.wait();
 ```
 
 ```rust
-let client = Client::<BankApi>::connect("ws://bank.example.com:7878/", Some(&token));
+let client = Client::<BankApi>::connect("wss://bank.example.com/", Some(&token));
 client.send(&sam, DepositMoney { amount: 100 });    // the same code as in process
 ```
 
@@ -61,8 +61,9 @@ The client reconnects by itself, waiting 0.1s, then 0.2s, up to 5s between tries
 
 | What | While it's down |
 | --- | --- |
-| A send or read it was carrying | `Unavailable`. Retry a send with the [same id](client.md#when-the-outcome-is-unknown) |
-| A send or read made now | waits for the connection, or fails with the next failed try |
+| A send | waits, and goes out again on reconnect under the same id; see [Offline and instant](offline.md) |
+| A read it was carrying | `Unavailable` |
+| A read made now | waits for the connection, or fails with the next failed try |
 | `live` | keeps its last value, then catches up |
 | `events` | picks up after the last entry it had, then sends `CaughtUp` again |
 
@@ -74,6 +75,34 @@ let _banner = connection.on_change(|c, _| show_offline_banner(!matches!(**c, Con
 ```text
 Connecting → Connected → Reconnecting { reason: "unexpected end of file" } → Connected
 ```
+
+## Serve it over TLS
+
+Tokens travel on the connection, so encrypt it whenever clients connect over the internet:
+
+```rust
+let tls = ServerTls::from_pem(&std::fs::read("fullchain.pem")?, &std::fs::read("privkey.pem")?)?;
+let server = Server::<BankApi>::new(memory).sessions(check).tls(tls).listen("0.0.0.0:443")?;
+server.url()                                    // "wss://0.0.0.0:443/"
+```
+
+A client connects to `wss://` the same way, trusting what the system trusts:
+
+```rust
+let client = Client::<BankApi>::connect("wss://bank.example.com/", Some(&token));
+```
+
+For a certificate your own authority signed, as in tests:
+
+```rust
+let client = Client::<BankApi>::connect_with(&url, Some(&token), ClientTls::trusting(&std::fs::read("ca.pem")?)?);
+```
+
+```text
+Reconnecting { reason: "invalid peer certificate: UnknownIssuer" }     a server it doesn't trust
+```
+
+A TLS proxy in front of a plain server works too.
 
 ## Host mode
 
@@ -111,8 +140,7 @@ server.stop();     // or drop it: stops listening and closes every connection
 
 ## Limits
 
-- `ws://` only. Put a TLS proxy in front for `wss://`.
 - `Client::connect` is native only; a browser transport comes later.
 - One server process. A server also runs the model's policies and schedules.
 
-Next: [Stories](stories.md).
+Next: [Offline and instant](offline.md).

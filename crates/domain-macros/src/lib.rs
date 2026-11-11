@@ -200,12 +200,13 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..), rejects(..), version = N)]`
+/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..), rejects(..), predicts(..), version = N)]`
 ///
 /// Generates `<Name>Input` (the events it reads), `<Name>Event` when `events(..)` is given,
 /// `<Name>Rejection`, `impl View`, and `impl Consumes` per source. With `rejects(..)` you implement
 /// `Validate`; without, every read is allowed. `state` defaults to `()`. A source listed in
-/// `key_of(..)` is routed by `impl KeyOf<Source>`; any other source's id must be the key.
+/// `key_of(..)` is routed by `impl KeyOf<Source>`; any other source's id must be the key. Each
+/// command in `predicts(..)` needs an `impl Predict<Command>`.
 #[proc_macro_derive(View, attributes(view))]
 pub fn derive_view(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -258,7 +259,7 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
 fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());
-    let (mut version, mut rejects) = (None, Vec::new());
+    let (mut version, mut rejects, mut predicts) = (None, Vec::new(), Vec::new());
     parse_attr(input, "view", |meta| {
         if meta.path.is_ident("key") {
             key = Some(meta.value()?.parse::<Type>()?);
@@ -274,8 +275,12 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             version = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse::<u64>()?);
         } else if meta.path.is_ident("rejects") {
             rejects = paths(&meta)?;
+        } else if meta.path.is_ident("predicts") {
+            predicts = paths(&meta)?;
         } else {
-            return Err(meta.error("expected `key`, `from`, `state`, `events`, `key_of`, `rejects` or `version`"));
+            return Err(
+                meta.error("expected `key`, `from`, `state`, `events`, `key_of`, `rejects`, `predicts` or `version`")
+            );
         }
         Ok(())
     })?;
@@ -349,6 +354,11 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
 
             fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
                 #( sources.source::<#source_paths>(); )*
+            }
+
+            fn predictions<__P: ::domain::Predictions<Self>>(predictions: &mut __P) {
+                let _ = &predictions;
+                #( predictions.predicts::<#predicts>(); )*
             }
 
             fn auto_emit(input: &#input_enum) -> ::std::option::Option<#event_ty> {

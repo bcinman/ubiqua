@@ -104,6 +104,8 @@ let sent = match client.send_with_id(&sam, WithdrawMoney { amount: 30 }, "withdr
 
 Even if both attempts reach the model, the money leaves once. A panic during one command doesn't stop the commands after it.
 
+Over a connection, a client does this for you when the connection drops: see [Offline and instant](offline.md).
+
 ## Read
 
 ```rust

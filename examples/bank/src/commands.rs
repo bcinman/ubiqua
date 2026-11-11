@@ -20,7 +20,7 @@ pub struct AlreadyOpen;
 
 // Deposit money.
 
-#[derive(Command, Debug, Serialize, Deserialize)]
+#[derive(Command, Clone, Debug, Serialize, Deserialize)]
 #[command(target = AccountId, events(MoneyDeposited), rejects(NotOpen), reply = Balance)]
 pub struct DepositMoney {
     pub amount: u64,
@@ -34,7 +34,7 @@ pub struct MoneyDeposited {
 
 // Withdraw money.
 
-#[derive(Command, Debug, Serialize, Deserialize)]
+#[derive(Command, Clone, Debug, Serialize, Deserialize)]
 #[command(target = AccountId, events(MoneyWithdrawn), rejects(NotOpen, NotOwner, InsufficientFunds, Frozen), reply = Balance)]
 pub struct WithdrawMoney {
     pub amount: u64,

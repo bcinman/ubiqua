@@ -1,17 +1,36 @@
 use crate::*;
-use domain::{Apply, Event, KeyOf, Origin, ReadCx, Validate, View, ViewCx};
+use domain::{Apply, Event, KeyOf, Origin, Predict, ReadCx, Validate, View, ViewCx};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Who owns an account and what's in it. Only its owner may read it.
+/// Who owns an account and what's in it. Only its owner may read it. A deposit or withdrawal
+/// shows as soon as it's sent.
 #[derive(View)]
 #[view(
     key = AccountId,
     from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     state = Summary,
-    rejects(NotOwner)
+    rejects(NotOwner),
+    predicts(DepositMoney, WithdrawMoney)
 )]
 pub struct AccountSummary;
+
+impl Predict<DepositMoney> for AccountSummary {
+    fn predict(account: &AccountId, summary: &mut Option<Summary>, to: &AccountId, cmd: &DepositMoney) {
+        if let Some(summary) = summary.as_mut().filter(|_| account == to) {
+            summary.balance += cmd.amount;
+        }
+    }
+}
+
+impl Predict<WithdrawMoney> for AccountSummary {
+    fn predict(account: &AccountId, summary: &mut Option<Summary>, from: &AccountId, cmd: &WithdrawMoney) {
+        // An overdraft will be refused, so it changes nothing.
+        if let Some(summary) = summary.as_mut().filter(|s| account == from && s.balance >= cmd.amount) {
+            summary.balance -= cmd.amount;
+        }
+    }
+}
 
 impl Validate for AccountSummary {
     fn validate(cx: &ReadCx, _: &AccountId, summary: Option<&Summary>) -> Result<(), AccountSummaryRejection> {

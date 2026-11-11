@@ -148,12 +148,14 @@ Everything builds for `wasm32-unknown-unknown`:
 cargo check --target wasm32-unknown-unknown -p bank --lib
 ```
 
-There's no system clock there, so use `Memory::with_clock`. And state there doesn't have to be `Send`:
+There's no system clock there, so use `Memory::with_clock`.
+
+A `Memory` stays on one thread, so an aggregate's state doesn't have to be `Send`, natively or on the web, and nor do policies, projections and sagas:
 
 ```rust
-#[domain::aggregate(id = NoteId, state = Rc<Note>, ..)]   // builds for wasm, refused natively
+#[domain::aggregate(id = NoteId, state = Rc<Note>, ..)]   // builds natively and for wasm
 ```
 
-That's `MaybeSend` and `MaybeSync`: `Send` and `Sync` natively, nothing on wasm. Bound on them in code meant for both.
+What leaves that thread does: commands, events, rejections, replies, ids, and a view's key and state. They're bound on `MaybeSend`, which is `Send` natively and nothing on wasm; actors are `MaybeSync` too. Bound on them in code meant for both.
 
 Next: [Keep it on disk](storage.md).

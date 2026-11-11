@@ -34,19 +34,23 @@ pub struct Origin<'a, S: Source> {
     pub state: &'a S::SourceState,
 }
 
+/// What a view or projection is partitioned by, and the events it reads. The derives implement it.
+pub trait Keyed: Sized + MaybeSend + MaybeSync + 'static {
+    /// What one instance is about, such as one account. Events for one key are handled in order.
+    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
+    /// The events it reads, as an enum. The derive generates it.
+    type Input: Events;
+}
+
 /// A read model: state per key, folded from the events of aggregates and other views.
 /// Derive it with `#[derive(View)]`, then implement [`Apply`].
-pub trait View: Sized + MaybeSend + MaybeSync + 'static {
+pub trait View: Keyed {
     const NAME: &'static str;
     /// Change it whenever you change what the view computes, so a stored view is rebuilt from the
     /// events, along with every view that reads it. `#[view(version = 1)]` sets it.
     const VERSION: u64 = 0;
-    /// What one instance of the view is about, such as one account.
-    type Key: Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
     /// `Default` is the state before the key's first event.
     type State: Clone + Debug + Default + PartialEq + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static;
-    /// The events the view reads, as an enum. The derive generates it.
-    type Input: Events;
     /// The events the view emits. Without `events(..)`, every input it applies.
     type Event: Events;
     /// Why a read may be refused: `#[view(rejects(..))]`. Empty unless the view guards its keys.
@@ -78,14 +82,14 @@ pub trait Validate: View {
     fn validate(cx: &ReadCx<'_>, key: &Self::Key, state: Option<&Self::State>) -> Result<(), Self::Rejection>;
 }
 
-/// Routes a source's events to the view's keys. `#[derive(View)]` implements it per source.
-pub trait Consumes<S: Source>: View {
-    /// The key and input for this event, or `None` when the view doesn't read it.
+/// Routes a source's events to a view's or projection's keys. The derives implement it per source.
+pub trait Consumes<S: Source>: Keyed {
+    /// The key and input for this event, or `None` when it doesn't read it.
     fn route(id: &S::SourceId, event: &S::SourceEvent, state: &S::SourceState) -> Option<(Self::Key, Self::Input)>;
 }
 
-/// Visits the sources a view reads. Hosts implement it.
-pub trait Sources<V: View> {
+/// Visits the sources a view or projection reads. Hosts implement it.
+pub trait Sources<V: Keyed> {
     fn source<S: Source>(&mut self)
     where
         V: Consumes<S>;
@@ -93,7 +97,7 @@ pub trait Sources<V: View> {
 
 /// Picks the key for events from a source whose id isn't the view's key.
 /// List the source in `#[view(key_of(..))]`, then implement this.
-pub trait KeyOf<S: Source>: View {
+pub trait KeyOf<S: Source>: Keyed {
     /// `None` means the event belongs to no key.
     fn key_of(from: Origin<'_, S>, input: &Self::Input) -> Option<Self::Key>;
 }

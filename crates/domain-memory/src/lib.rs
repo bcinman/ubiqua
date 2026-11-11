@@ -10,18 +10,22 @@
 
 mod calls;
 mod policies;
+mod projections;
+mod sagas;
 mod schedules;
 mod store;
 mod views;
 
 pub use calls::StubbedCall;
 pub use policies::{PolicyCx, PolicyError, React};
+pub use projections::{Project, ProjectionError, ProjectionInput};
+pub use sagas::{Run, SagaCx, SagaStatus, Settle, Signal, SignalError, Step};
 pub use schedules::{ScheduleError, UnscheduleError};
 pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
 pub use views::{Feed, Publisher, Recv, Subscription, ViewReader, Watch, channel};
 
 use domain::{
-    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles,
+    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles, Keyed,
     MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
@@ -60,7 +64,10 @@ pub struct Memory {
     view_consumers: HashMap<TypeId, Arc<dyn Consumer>>,
     /// How to read each registered aggregate's history, for views added later.
     histories: HashMap<TypeId, HistoryFn>,
-    policies: Vec<Arc<dyn policies::PolicyRun>>,
+    /// Policies, projections and saga runs: what `run_due` runs.
+    runners: Vec<Arc<dyn policies::PolicyRun>>,
+    /// Each projection's and saga's host, by its `TypeId`.
+    hosts: HashMap<TypeId, AnyBox>,
     /// Scheduled commands, by stream and command id.
     schedules: Mutex<HashMap<(String, String), ScheduleRow>>,
     /// How to send each kind of scheduled command, by `Aggregate.Command`.
@@ -106,7 +113,8 @@ impl Memory {
             views: HashMap::new(),
             view_consumers: HashMap::new(),
             histories: HashMap::new(),
-            policies: Vec::new(),
+            runners: Vec::new(),
+            hosts: HashMap::new(),
             schedules: Mutex::default(),
             firers: Mutex::default(),
             stuck: Mutex::default(),
@@ -142,8 +150,8 @@ impl Memory {
             self.again.store(false, Ordering::SeqCst);
             self.fire_due();
             retry = None;
-            for policy in &self.policies {
-                if let policies::Next::RetryAt(at) = policy.run(self, &waker) {
+            for runner in &self.runners {
+                if let policies::Next::RetryAt(at) = runner.run(self, &waker) {
                     retry = Some(retry.map_or(at, |r: Timestamp| r.min(at)));
                 }
             }
@@ -166,9 +174,10 @@ impl Memory {
         lock(&self.hooks).push(Arc::new(hook));
     }
 
-    /// Each policy's last failure, until it succeeds on that event.
-    pub fn policy_failures(&self) -> Vec<String> {
-        self.policies.iter().filter_map(|policy| policy.failure()).collect()
+    /// What's failing now: each policy's or projection's last failure, until it succeeds on that
+    /// event, and each saga run that died.
+    pub fn failures(&self) -> Vec<String> {
+        self.runners.iter().flat_map(|runner| runner.failures()).collect()
     }
 
     fn wake(&self) {
@@ -430,7 +439,7 @@ impl Memory {
             // behind with its deliveries, and tries them again on the next read or command.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| consumer.drain()));
         }
-        if !self.policies.is_empty() {
+        if !self.runners.is_empty() {
             self.wake();
         }
     }
@@ -759,11 +768,11 @@ impl Registry for Registrar<'_> {
 }
 
 /// Hosts each source of a view before the view itself.
-struct HostSources<'r, 'm> {
-    registrar: &'r mut Registrar<'m>,
+pub(crate) struct HostSources<'r, 'm> {
+    pub(crate) registrar: &'r mut Registrar<'m>,
 }
 
-impl<V: Apply> Sources<V> for HostSources<'_, '_> {
+impl<V: Keyed> Sources<V> for HostSources<'_, '_> {
     fn source<S: Source>(&mut self)
     where
         V: Consumes<S>,

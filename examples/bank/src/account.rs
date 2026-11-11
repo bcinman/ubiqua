@@ -6,7 +6,7 @@ use domain::{Aggregate, Cx, Decide, Decision, Evolve};
     id = AccountId,
     state = AccountState,
     events(AccountOpened, MoneyDeposited, MoneyWithdrawn, AccountFrozen, AccountThawed),
-    commands(OpenAccount, DepositMoney, WithdrawMoney, FreezeAccount, ThawAccount),
+    commands(OpenAccount, DepositMoney, WithdrawMoney, RefundMoney, FreezeAccount, ThawAccount),
 )]
 pub struct Account;
 
@@ -72,6 +72,19 @@ impl Decide<DepositMoney> for Account {
     fn decide(state: &AccountState, cmd: &DepositMoney, _: &Cx) -> Decision<DepositMoney> {
         let balance = open(state)?;
         Ok(vec![MoneyDeposited { amount: cmd.amount, balance_after: balance + cmd.amount }.into()])
+    }
+
+    fn reply(state: &AccountState) -> Balance {
+        balance(state)
+    }
+}
+
+impl Decide<RefundMoney> for Account {
+    fn decide(state: &AccountState, cmd: &RefundMoney, _: &Cx) -> Decision<RefundMoney> {
+        Ok(match open(state) {
+            Ok(balance) => vec![MoneyDeposited { amount: cmd.amount, balance_after: balance + cmd.amount }.into()],
+            Err(NotOpen) => vec![],
+        })
     }
 
     fn reply(state: &AccountState) -> Balance {

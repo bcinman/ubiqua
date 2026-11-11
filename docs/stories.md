@@ -29,6 +29,10 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.view::<V>(&key, state)` | a view's state for one key |
 | `.emitted::<V>(&key, [events])` | every event a view emitted for one key |
 | `.policy(p)` | runs a policy |
+| `.projection(p)` | runs a [projection](projections.md); read its store after |
+| `.saga::<S>()` | runs a [saga](sagas.md)'s runs; one that dies fails the story |
+| `.saga_status::<S>(&key, status)` | where a saga's run stands |
+| `.signal::<S>(&key, "name", value)` | signals a saga's run, then runs what it does next |
 | `.call(call)` | a policy made exactly this call; answer with `.succeed(v)` or `.fail(e)` |
 | `.external(system, adapter)` | answers calls with a real adapter instead |
 | `.acting_as(user)` | sends the commands after it as `user`; see [Who is asking](sessions.md) |

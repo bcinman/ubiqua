@@ -11,6 +11,7 @@ mod api;
 mod external;
 mod maybe;
 mod policy;
+mod projection;
 mod values;
 mod view;
 pub mod wire;
@@ -30,14 +31,17 @@ pub mod __private {
 
 pub use actor::{CurrentActor, ReadCx};
 pub use api::{Api, ApiRegistry, Reads, Sends, SentVia};
-pub use domain_macros::{Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Rejection, View};
+pub use domain_macros::{
+    Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Projection, Rejection, Saga, View,
+};
 pub use external::{Adapter, Answer, Answered, Call, CallError, Calls, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};
 pub use policy::{Policy, PolicySources, Reacts};
+pub use projection::{Projection, Saga, WidenRejection};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
-    Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Member, Model, NotCaughtUp, Origin, Position, Registry,
-    Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
+    Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Keyed, Member, Model, NotCaughtUp, Origin, Position,
+    Registry, Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
 };
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.

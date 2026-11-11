@@ -4,7 +4,7 @@
 use crate::store::{EntryRow, KeyRow, Store, ViewRows};
 use crate::{json, lock};
 use domain::{
-    Apply, Consumes, Cursor, Entry, Frame, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source,
+    Apply, Consumes, Cursor, Entry, Frame, Keyed, MaybeSend, MaybeSync, NotCaughtUp, Position, Snapshot, Source,
     SourcePayload, StreamId, Timestamp, View, ViewCx,
 };
 use std::any::{Any, TypeId};
@@ -91,7 +91,7 @@ pub(crate) trait Consumer: MaybeSend + MaybeSync {
     fn add_downstream(&self, consumer: Arc<dyn Consumer>);
 }
 
-type RouteFn<V> = fn(&Delivery) -> Option<(<V as View>::Key, <V as View>::Input)>;
+type RouteFn<V> = fn(&Delivery) -> Option<(<V as Keyed>::Key, <V as Keyed>::Input)>;
 
 fn route_of<V: Consumes<S> + Apply, S: Source>(delivery: &Delivery) -> Option<(V::Key, V::Input)> {
     let (id, event, state) = (*delivery.payload).downcast_ref::<SourcePayload<S>>()?;

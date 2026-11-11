@@ -45,13 +45,18 @@ fn main() {
     }
 }
 
-/// The bank, with its fraud review asking a stand-in scorer.
+/// The bank, with its fraud review asking a stand-in scorer, and transfers.
 fn bank(db: Option<&str>) -> Memory {
     let memory = match db {
         Some(path) => Memory::new().persist_to(Sqlite::open(path).expect("open the database")),
         None => Memory::new(),
     };
-    memory.with::<Bank>().policy(FraudReview).external(FraudCheck, RuleOfThumb)
+    memory
+        .with::<Bank>()
+        .policy(FraudReview)
+        .external(FraudCheck, RuleOfThumb)
+        .policy(TransferExecution)
+        .saga::<ExecuteTransfer>()
 }
 
 /// What a UI would do. It doesn't know whether the bank is in this process or on a server.
@@ -69,6 +74,14 @@ fn app(client: &Client<BankApi>, me: &str) -> (LiveView<Read<AccountSummary>>, L
     client.send(&account, OpenAccount { owner: me.into() });
     client.send(&account, DepositMoney { amount: 1000 });
     client.send(&account, WithdrawMoney { amount: 30 });
+
+    // Move some to savings. The transfer finishes on its own; the summary redraws when it does.
+    let savings = AccountId::new(format!("{me}-savings"));
+    client.send(&savings, OpenAccount { owner: me.into() });
+    let transfer = RequestTransfer { from: account.clone(), to: savings, amount: 50 };
+    if let Err(refusal) = next_frame(client.send(&TransferId::new(format!("{me}-to-savings")), transfer)) {
+        println!("transfer: {refusal}");
+    }
     // Scored as risky, so the account freezes for a day and the next withdrawal is refused.
     for amount in [900, 10] {
         match next_frame(client.send(&account, WithdrawMoney { amount })) {

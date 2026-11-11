@@ -27,7 +27,13 @@ withdraw 500: rejected: InsufficientFunds { balance: 140, requested: 500 }
 | `views`, `view_keys`, `view_entries`, `view_progress` | each view's version, state per key, emitted events, and how far it has read |
 | `schedules` | each [scheduled command](policies.md#schedules): when, and whether it ran or was cancelled |
 
-A [policy](policies.md) keeps how far it has read in `view_progress`, as `policy:FraudReview`.
+Policies, projections and sagas keep theirs in the view tables:
+
+| Name | Holds |
+| --- | --- |
+| `policy:FraudReview` | how far the [policy](policies.md) has read |
+| `projection:Ledger` | the [projection](projections.md)'s version, and how far it has written |
+| `saga:ExecuteTransfer` | each [saga](sagas.md) run: its input, step results and signals, by key |
 
 Values are JSON, so any SQLite tool can read them:
 

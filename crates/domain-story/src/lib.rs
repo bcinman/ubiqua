@@ -9,7 +9,7 @@ use domain::{
     Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles, Model,
     Receipt, SendError, StreamId, Timestamp,
 };
-use domain_memory::{Memory, React, StubbedCall};
+use domain_memory::{Memory, Project, React, Run, SagaStatus, StubbedCall};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -52,6 +52,16 @@ impl Story {
     /// Runs a policy after every step. Its commands' events must be checked like any others.
     pub fn policy<P: React>(self, policy: P) -> Self {
         self.build(|memory| memory.policy(policy))
+    }
+
+    /// Runs a projection after every step. Give it a store you can read back.
+    pub fn projection<P: Project>(self, projection: P) -> Self {
+        self.build(|memory| memory.projection(projection))
+    }
+
+    /// Runs the saga `S`'s runs after every step. A run that dies fails the story.
+    pub fn saga<S: Run>(self) -> Self {
+        self.build(Memory::saga::<S>)
     }
 
     /// Answers `system`'s calls with a real adapter instead of the story.
@@ -122,7 +132,7 @@ impl Story {
     /// Runs the policies and anything due, and fails on a policy that failed.
     fn run(&self) {
         self.memory.run_due();
-        let failures = self.memory.policy_failures();
+        let failures = self.memory.failures();
         if !failures.is_empty() {
             panic!("story: {}", failures.join("; "));
         }
@@ -213,6 +223,21 @@ impl<C: Command> When<C> {
         let actual: Vec<V::Event> = entries.into_iter().map(|entry| entry.event).collect();
         let expected: Vec<V::Event> = expected.into_iter().map(Into::into).collect();
         assert_eq!(actual, expected, "{} emitted for {key:?}", V::NAME);
+        self
+    }
+
+    /// Checks where the run of `S` under `key` stands.
+    pub fn saga_status<S: Run>(self, key: &S::Key, expected: SagaStatus<S::Rejection>) -> Self {
+        assert_eq!(self.story.memory.saga_status::<S>(key), expected, "{} {key}", S::NAME);
+        self
+    }
+
+    /// Sends the run of `S` under `key` a signal, then runs what it does next.
+    pub fn signal<S: Run>(self, key: &S::Key, name: &str, value: impl serde::Serialize) -> Self {
+        if let Err(e) = self.story.memory.signal::<S>(key, name, value) {
+            panic!("story: signal {name} to {} {key}: {e}", S::NAME);
+        }
+        self.story.run();
         self
     }
 

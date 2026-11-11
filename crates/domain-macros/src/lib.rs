@@ -96,6 +96,7 @@ fn command(input: &DeriveInput) -> syn::Result<Tokens> {
     let event_union = union(&input.vis, &event_enum, &events, &events_doc, Kind::Events);
     let rejection_union = union(&input.vis, &rejection_enum, &rejects, &rejections_doc, Kind::Rejections);
     let variants: Vec<&Ident> = events.iter().map(last_ident).collect();
+    let rejection_variants: Vec<&Ident> = rejects.iter().map(last_ident).collect();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let never_rejects = rejects
         .is_empty()
@@ -111,6 +112,14 @@ fn command(input: &DeriveInput) -> syn::Result<Tokens> {
         {
             fn widen(self) -> __E {
                 match self { #( Self::#variants(e) => __E::from(e), )* }
+            }
+        }
+
+        impl<__R> ::domain::WidenRejection<__R> for #rejection_enum
+        where #( __R: ::std::convert::From<#rejects>, )*
+        {
+            fn widen(self) -> __R {
+                match self { #( Self::#rejection_variants(r) => __R::from(r), )* }
             }
         }
 
@@ -302,30 +311,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     };
 
     let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
-    let consumes = sources.iter().map(|(source, list)| {
-        let pick = pick_input(source, list, &input_enum);
-        let key_expr = if key_of.iter().any(|path| last_ident(path) == last_ident(source)) {
-            quote!(<Self as ::domain::KeyOf<#source>>::key_of(::domain::Origin { id, state }, &input)?)
-        } else {
-            quote_spanned!(source.span() =>
-                <#key as ::domain::KeyFrom<<#source as ::domain::Source>::SourceId>>::key_from(id))
-        };
-        quote! {
-            impl ::domain::Consumes<#source> for #name {
-                #[allow(clippy::question_mark)]
-                fn route(
-                    id: &<#source as ::domain::Source>::SourceId,
-                    event: &<#source as ::domain::Source>::SourceEvent,
-                    state: &<#source as ::domain::Source>::SourceState,
-                ) -> ::std::option::Option<(#key, #input_enum)> {
-                    let _ = state;
-                    let input = #pick;
-                    let key = #key_expr;
-                    ::std::option::Option::Some((key, input))
-                }
-            }
-        }
-    });
+    let keyed = keyed(name, &key, &sources, &key_of, &input_enum);
 
     let rejection_enum = format_ident!("{}Rejection", name);
     let rejection_doc = format!("Why a read of `{name}` may be refused.");
@@ -352,13 +338,12 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
         #event_union
         #rejection_union
         #validate
+        #keyed
 
         impl ::domain::View for #name {
             const NAME: &'static str = #tag;
             #version
-            type Key = #key;
             type State = #state;
-            type Input = #input_enum;
             type Event = #event_ty;
             type Rejection = #rejection_enum;
 
@@ -381,14 +366,122 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
-        #( #consumes )*
-
         const _: () = {
             #[allow(dead_code)]
             fn checks() {
                 ::domain::__assert_apply::<#name>();
             }
         };
+    })
+}
+
+/// `#[projection(key = Key, from(Source(Event, ..), ..), key_of(Source, ..), version = N)]`
+///
+/// Generates `<Name>Input` (the events it reads), `impl Projection`, and `impl Consumes` per
+/// source, routed as a view's are.
+#[proc_macro_derive(Projection, attributes(projection))]
+pub fn derive_projection(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    projection(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn projection(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut key, mut sources, mut key_of, mut version) = (None, Vec::new(), Vec::new(), None);
+    parse_attr(input, "projection", |meta| {
+        if meta.path.is_ident("key") {
+            key = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("from") {
+            sources = parse_from(&meta, "projection")?;
+        } else if meta.path.is_ident("key_of") {
+            key_of = paths(&meta)?;
+        } else if meta.path.is_ident("version") {
+            version = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse::<u64>()?);
+        } else {
+            return Err(meta.error("expected `key`, `from`, `key_of` or `version`"));
+        }
+        Ok(())
+    })?;
+    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a projection needs `#[projection(key = .., ..)]`"))?;
+    if sources.is_empty() {
+        return Err(syn::Error::new_spanned(name, "a projection needs `#[projection(from(Source(Event, ..)), ..)]`"));
+    }
+    for path in &key_of {
+        if !sources.iter().any(|(source, _)| last_ident(source) == last_ident(path)) {
+            return Err(syn::Error::new_spanned(path, "`key_of` names a source that isn't in `from(..)`"));
+        }
+    }
+    let tag = name.to_string();
+    let version = version.map(|v| quote!(const VERSION: u64 = #v;));
+    let input_enum = format_ident!("{}Input", name);
+    let doc = format!("The events `{name}` reads.");
+    let input_union = union(&input.vis, &input_enum, &reads_of(&sources), &doc, Kind::Events);
+    let keyed = keyed(name, &key, &sources, &key_of, &input_enum);
+    let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
+    Ok(quote! {
+        #input_union
+        #keyed
+
+        impl ::domain::Projection for #name {
+            const NAME: &'static str = #tag;
+            #version
+
+            fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
+                #( sources.source::<#source_paths>(); )*
+            }
+        }
+    })
+}
+
+/// `#[saga(key = Key, rejects(..), sends(..))]`
+///
+/// Generates `<Name>Rejection` and `impl Saga`. For each command in `sends(..)`, its rejections
+/// convert into the saga's with `?`; the saga's `rejects(..)` must include them all.
+#[proc_macro_derive(Saga, attributes(saga))]
+pub fn derive_saga(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    saga(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn saga(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut key, mut rejects, mut sends) = (None, Vec::new(), Vec::new());
+    parse_attr(input, "saga", |meta| {
+        if meta.path.is_ident("key") {
+            key = Some(meta.value()?.parse::<Type>()?);
+        } else if meta.path.is_ident("rejects") {
+            rejects = paths(&meta)?;
+        } else if meta.path.is_ident("sends") {
+            sends = paths(&meta)?;
+        } else {
+            return Err(meta.error("expected `key`, `rejects` or `sends`"));
+        }
+        Ok(())
+    })?;
+    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a saga needs `#[saga(key = .., ..)]`"))?;
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(&input.generics, "a saga can't be generic"));
+    }
+    let tag = name.to_string();
+    let rejection_enum = format_ident!("{}Rejection", name);
+    let doc = format!("Why a run of `{name}` may be refused.");
+    let rejection_union = union(&input.vis, &rejection_enum, &rejects, &doc, Kind::Rejections);
+    Ok(quote! {
+        #rejection_union
+
+        impl ::domain::Saga for #name {
+            const NAME: &'static str = #tag;
+            type Key = #key;
+            type Rejection = #rejection_enum;
+        }
+
+        #(
+            impl ::std::convert::From<<#sends as ::domain::Command>::Rejection> for #rejection_enum {
+                fn from(rejection: <#sends as ::domain::Command>::Rejection) -> Self {
+                    ::domain::WidenRejection::widen(rejection)
+                }
+            }
+        )*
     })
 }
 
@@ -559,6 +652,42 @@ fn reads_of(sources: &[(Path, Vec<Path>)]) -> Vec<Path> {
 }
 
 /// An expression turning `event`, from `source`, into the input enum, or returning `None`.
+/// `impl Keyed`, and `impl Consumes` per source: a source in `key_of` is routed by its `KeyOf`;
+/// any other's id is the key.
+fn keyed(name: &Ident, key: &Type, sources: &[(Path, Vec<Path>)], key_of: &[Path], input_enum: &Ident) -> Tokens {
+    let consumes = sources.iter().map(|(source, list)| {
+        let pick = pick_input(source, list, input_enum);
+        let key_expr = if key_of.iter().any(|path| last_ident(path) == last_ident(source)) {
+            quote!(<Self as ::domain::KeyOf<#source>>::key_of(::domain::Origin { id, state }, &input)?)
+        } else {
+            quote_spanned!(source.span() =>
+                <#key as ::domain::KeyFrom<<#source as ::domain::Source>::SourceId>>::key_from(id))
+        };
+        quote! {
+            impl ::domain::Consumes<#source> for #name {
+                #[allow(clippy::question_mark)]
+                fn route(
+                    id: &<#source as ::domain::Source>::SourceId,
+                    event: &<#source as ::domain::Source>::SourceEvent,
+                    state: &<#source as ::domain::Source>::SourceState,
+                ) -> ::std::option::Option<(#key, #input_enum)> {
+                    let _ = state;
+                    let input = #pick;
+                    let key = #key_expr;
+                    ::std::option::Option::Some((key, input))
+                }
+            }
+        }
+    });
+    quote! {
+        impl ::domain::Keyed for #name {
+            type Key = #key;
+            type Input = #input_enum;
+        }
+        #( #consumes )*
+    }
+}
+
 fn pick_input(source: &Path, list: &[Path], input_enum: &Ident) -> Tokens {
     let variants = list.iter().map(last_ident);
     quote! {

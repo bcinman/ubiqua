@@ -26,6 +26,14 @@ pub struct Credit {
 #[command(target = WalletId, events(Credited))]
 pub struct Note;
 
+/// Succeeds only on a wallet with money in it, and records nothing.
+#[derive(Command, Debug, Serialize, Deserialize)]
+#[command(target = WalletId, events(Credited), rejects(Empty))]
+pub struct Claim;
+
+#[derive(domain::Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Empty;
+
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Credited {
     amount: u64,
@@ -33,7 +41,7 @@ pub struct Credited {
 }
 
 #[derive(Aggregate)]
-#[aggregate(id = WalletId, state = u64, events(Credited), commands(Credit, Note))]
+#[aggregate(id = WalletId, state = u64, events(Credited), commands(Credit, Note, Claim))]
 pub struct Wallet;
 
 impl Evolve for Wallet {
@@ -50,6 +58,13 @@ impl Decide<Credit> for Wallet {
     fn reply(total: &u64) -> u64 {
         *total
     }
+}
+
+impl Decide<Claim> for Wallet {
+    fn decide(total: &u64, _: &Claim, _: &Cx) -> Decision<Claim> {
+        if *total == 0 { Err(Empty.into()) } else { Ok(vec![]) }
+    }
+    fn reply(_: &u64) {}
 }
 
 impl Decide<Note> for Wallet {
@@ -336,4 +351,104 @@ fn a_schedule_fires_after_a_restart_once() {
 
     let memory = open_at(7_000);
     assert_eq!(memory.run_due(), None, "nothing left to fire");
+}
+
+/// Copies each credit's `(wallet, seq)` to a list the test reads, as a projection would to a
+/// table. `p1` is the same projection under a new version.
+mod p0 {
+    use super::*;
+    use domain::Projection;
+    use domain_memory::{Project, ProjectionError, ProjectionInput};
+
+    #[derive(Projection)]
+    #[projection(key = WalletId, from(Wallet(Credited)))]
+    pub struct Rows(pub Arc<std::sync::Mutex<Vec<(String, u64)>>>);
+
+    impl Project for Rows {
+        async fn project(&self, key: &WalletId, batch: Vec<ProjectionInput<Self>>) -> Result<(), ProjectionError> {
+            self.0.lock().unwrap().extend(batch.iter().map(|input| (key.to_string(), input.seq)));
+            Ok(())
+        }
+    }
+}
+
+mod p1 {
+    use super::*;
+    use domain::Projection;
+    use domain_memory::{Project, ProjectionError, ProjectionInput};
+
+    #[derive(Projection)]
+    #[projection(key = WalletId, from(Wallet(Credited)), version = 1)]
+    pub struct Rows(pub Arc<std::sync::Mutex<Vec<(String, u64)>>>);
+
+    impl Project for Rows {
+        async fn project(&self, key: &WalletId, batch: Vec<ProjectionInput<Self>>) -> Result<(), ProjectionError> {
+            self.0.lock().unwrap().extend(batch.iter().map(|input| (key.to_string(), input.seq)));
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn a_projection_writes_what_it_missed_and_all_of_history_when_its_version_changes() {
+    let db = TempDb::new("projections");
+    let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let take = || std::mem::take(&mut *written.lock().unwrap());
+    {
+        let memory = Arc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone())));
+        memory.send(&w("a"), Credit { amount: 5 }).unwrap();
+        memory.run_due();
+    }
+    db.open::<WalletsOnly>().send(&w("a"), Credit { amount: 1 }).unwrap();
+    assert_eq!(take(), [("a".to_string(), 1)]);
+
+    Arc::new(db.open::<WalletsOnly>().projection(p0::Rows(written.clone()))).run_due();
+    assert_eq!(take(), [("a".to_string(), 2)], "only what it missed");
+
+    Arc::new(db.open::<WalletsOnly>().projection(p1::Rows(written.clone()))).run_due();
+    assert_eq!(take(), [("a".to_string(), 1), ("a".to_string(), 2)], "a new version gets all of history");
+}
+
+/// Credits `<key>-paid` with 1, tries to claim `<key>`, waits for `go`, then credits
+/// `<key>-paid` with 10 if the claim succeeded, or 100 if it was refused.
+#[derive(domain::Saga, Debug, Serialize, Deserialize)]
+#[saga(key = WalletId)]
+pub struct Pay;
+
+impl domain_memory::Run for Pay {
+    async fn run(self, cx: &domain_memory::SagaCx<Self>) -> Result<(), PayRejection> {
+        let paid = w(&format!("{}-paid", cx.key()));
+        let _ = cx.send("first", &paid, Credit { amount: 1 }).await;
+        let claimed = cx.send("claim", cx.key(), Claim).await.is_ok();
+        cx.signal::<()>("go").await;
+        let _ = cx.send("second", &paid, Credit { amount: if claimed { 10 } else { 100 } }).await;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_saga_run_carries_on_after_a_restart_without_repeating_its_steps() {
+    use domain_memory::SagaStatus;
+    let db = TempDb::new("sagas");
+    let open = || Arc::new(db.open::<WalletsOnly>().saga::<Pay>());
+    {
+        let memory = open();
+        memory.start_saga(&w("a"), Pay).unwrap();
+        memory.run_due();
+        assert_eq!(memory.state(&w("a-paid")), 1);
+    }
+
+    let memory = open();
+    assert_eq!(memory.saga_status::<Pay>(&w("a")), SagaStatus::Running);
+    memory.send(&w("a"), Credit { amount: 5 }).unwrap(); // a claim would succeed now
+    memory.signal::<Pay>(&w("a"), "go", ()).unwrap();
+    memory.run_due();
+    assert_eq!(memory.saga_status::<Pay>(&w("a")), SagaStatus::Completed);
+    assert_eq!(memory.versions().into_iter().find(|(s, _)| s.as_str() == "Wallet/a-paid").unwrap().1, 2);
+    drop(memory);
+
+    let memory = open();
+    memory.run_due();
+    assert_eq!(memory.saga_status::<Pay>(&w("a")), SagaStatus::Completed);
+    assert_eq!(memory.state(&w("a-paid")), 101, "one credit per step, and the claim stays refused");
 }

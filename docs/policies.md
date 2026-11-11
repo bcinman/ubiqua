@@ -74,6 +74,7 @@ pub enum NotifyInput {
 | `schedule(&id, cmd, at)` | send a command later |
 | `schedule_with_id(&id, cmd, at, "id")` / `unschedule(&id, "id")` | a schedule you can cancel |
 | `send_as(&actor, &id, cmd)` | send as someone, for a `decide` that checks [who is asking](sessions.md) |
+| `start_saga(&key, saga)` / `signal::<S>(&key, "name", value)` | start a [saga](sagas.md) / signal one |
 
 ## Running twice is safe
 
@@ -94,7 +95,7 @@ Return `Err`, or panic, and it runs again later: after 1s, 2s, 4s, up to a minut
 Err(PolicyError::new("the ledger is down"))
 cx.send(&account, FreezeAccount)?;     // any error converts with `?`
 
-bank.policy_failures();                // ["FraudReview failed on Account/sam-main #4: the ledger is down"]
+bank.failures();                // ["FraudReview failed on Account/sam-main #4: the ledger is down"]
 ```
 
 To give up on an event instead, handle the error and return `Ok(())`.
@@ -223,4 +224,4 @@ Story::new()
 
 See [Stories](stories.md#policies).
 
-Next: [Who is asking](sessions.md).
+Next: [Projections](projections.md).

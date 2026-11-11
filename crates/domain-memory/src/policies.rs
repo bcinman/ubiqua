@@ -5,7 +5,7 @@
 use crate::calls::{BoxFuture, unbox};
 use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
-use crate::{AggregateOf, Memory, Registrar, ScheduleError, UnscheduleError, lock, reason};
+use crate::{AggregateOf, Memory, Registrar, Run, ScheduleError, SignalError, UnscheduleError, lock, reason};
 use domain::{
     AggregateId, Answered, Call, Command, CommandId, CurrentActor, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects,
     Policy, PolicySources, Reacts, Receipt, SendError, Source, SourcePayload, StreamId, Timestamp,
@@ -169,6 +169,17 @@ impl<P: Policy> PolicyCx<P> {
         self.memory().unschedule(id, command_id)
     }
 
+    /// Starts a run of the saga `S` under `key`. Starting under a key already started does
+    /// nothing, so a policy that runs twice starts one run: key it by what the run is about.
+    pub fn start_saga<S: Run>(&self, key: &S::Key, input: S) -> Result<(), StoreError> {
+        self.memory().start_saga(key, input)
+    }
+
+    /// Sends a saga's run a signal. The first value sent under a name is the one it gets.
+    pub fn signal<S: Run>(&self, key: &S::Key, name: &str, value: impl serde::Serialize) -> Result<(), SignalError> {
+        self.memory().signal::<S>(key, name, value)
+    }
+
     /// Calls an external system. Pass it something that identifies the request, so the vendor
     /// acts once however many times the policy runs.
     pub async fn call<C: Call>(&self, call: C) -> Answered<C> {
@@ -194,8 +205,8 @@ pub(crate) enum Next {
 pub(crate) trait PolicyRun: MaybeSend + MaybeSync {
     /// Handles deliveries in order until one waits or fails, or none is left.
     fn run(&self, memory: &Arc<Memory>, waker: &Waker) -> Next;
-    /// The last failure, until the event succeeds.
-    fn failure(&self) -> Option<String>;
+    /// What's failing now, until it succeeds.
+    fn failures(&self) -> Vec<String>;
 }
 
 type RouteFn<P> = fn(&Delivery) -> Option<<P as Policy>::Input>;
@@ -297,8 +308,8 @@ impl<P: React> PolicyRun for PolicyHost<P> {
         }
     }
 
-    fn failure(&self) -> Option<String> {
-        lock(&self.running).failure.clone()
+    fn failures(&self) -> Vec<String> {
+        lock(&self.running).failure.iter().cloned().collect()
     }
 }
 
@@ -405,7 +416,7 @@ impl Memory {
                 None => self.consumers.entry(source).or_default().push(host.clone()),
             }
         }
-        self.policies.push(host);
+        self.runners.push(host);
         self
     }
 }

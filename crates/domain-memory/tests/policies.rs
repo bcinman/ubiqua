@@ -128,14 +128,14 @@ fn a_failed_policy_runs_again_later_and_its_commands_take_effect_once() {
     memory.send(&c("a"), Bump).unwrap();
 
     assert_eq!(memory.run_due(), Some(Timestamp::from_millis(2_000)), "retries after a second");
-    assert_eq!(memory.policy_failures(), ["Echo failed on Counter/a #1: not yet"]);
+    assert_eq!(memory.failures(), ["Echo failed on Counter/a #1: not yet"]);
     assert_eq!(memory.run_due(), Some(Timestamp::from_millis(2_000)), "not before its time");
 
     clock.store(2_000, Ordering::SeqCst);
     assert_eq!(memory.run_due(), Some(Timestamp::from_millis(4_000)), "then after two");
     clock.store(4_000, Ordering::SeqCst);
     assert_eq!(memory.run_due(), None);
-    assert!(memory.policy_failures().is_empty());
+    assert!(memory.failures().is_empty());
     assert_eq!(version(&memory, "Counter/a-echo"), 1, "three runs, one ping");
 }
 
@@ -159,7 +159,7 @@ fn an_adapter_answers_calls_and_without_one_the_policy_fails() {
     let memory = Arc::new(Memory::new().with::<Counting>().policy(AskFirst));
     memory.send(&c("a"), Bump).unwrap();
     memory.run_due();
-    let failures = memory.policy_failures();
+    let failures = memory.failures();
     assert!(failures[0].contains("nothing answers Lookup.ShouldPing"), "{failures:?}");
 }
 

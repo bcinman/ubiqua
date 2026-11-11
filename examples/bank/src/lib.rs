@@ -3,12 +3,16 @@
 mod account;
 mod commands;
 mod fraud;
+mod ledger;
+mod transfers;
 mod users;
 mod views;
 
 pub use account::{Account, AccountEvent, AccountState};
 pub use commands::*;
 pub use fraud::*;
+pub use ledger::*;
+pub use transfers::*;
 pub use users::*;
 pub use views::*;
 
@@ -18,13 +22,19 @@ domain::id!(
 domain::id!(
     pub struct OwnerId;
 );
+domain::id!(
+    pub struct TransferId;
+);
 
 /// Everything that runs together.
 #[derive(domain::Model)]
-#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
+#[model(aggregates(Account, Transfer), views(AccountSummary, OwnerHoldings, Statement))]
 pub struct Bank;
 
 /// What an app may do with a bank.
 #[derive(domain::Api)]
-#[api(commands(OpenAccount, DepositMoney, WithdrawMoney), views(AccountSummary, OwnerHoldings, Statement))]
+#[api(
+    commands(OpenAccount, DepositMoney, WithdrawMoney, RequestTransfer),
+    views(AccountSummary, OwnerHoldings, Statement)
+)]
 pub struct BankApi;

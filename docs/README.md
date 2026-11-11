@@ -20,8 +20,10 @@ command ──▶ aggregate ──▶ events ──▶ views
    │         evolve        never       get, list,
    │                       changed     live feeds
    │                         │
-   └────── policies ◀────────┘
-           call outside systems, schedule for later
+   └────── policies ◀────────┤
+           call outside systems,     ├──▶ projections ──▶ your own store
+           schedule for later,       │
+           start sagas               └──▶ sagas: several steps, undone if refused
 
 the same Client in process, or over WebSocket to a server shared by many users
 ```
@@ -31,6 +33,8 @@ the same Client in process, or over WebSocket to a server shared by many users
 - **Events** are the record. The state is rebuilt from them.
 - A **view** folds events into what people read: a balance, a statement.
 - A **policy** reacts to events with more commands, now or later.
+- A **projection** writes events into a store you own.
+- A **saga** takes several steps across aggregates, and undoes them if one is refused.
 
 ## Guides
 
@@ -42,17 +46,19 @@ the same Client in process, or over WebSocket to a server shared by many users
 6. [Keep it on disk](storage.md): SQLite, restarts, changing a view.
 7. [The client](client.md): what an app uses: send, read, follow live, with any UI.
 8. [Policies](policies.md): react to events, call outside systems, schedule for later.
-9. [Who is asking](sessions.md): actors, checked in `decide` and in a view's `validate`.
-10. [Serve it](server.md): client/server, many users, reconnecting.
-11. [Stories](stories.md): test rules as given, when, then.
-12. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+9. [Projections](projections.md): write events into your own store.
+10. [Sagas](sagas.md): several steps, each once, undone if refused.
+11. [Who is asking](sessions.md): actors, checked in `decide` and in a view's `validate`.
+12. [Serve it](server.md): client/server, many users, reconnecting.
+13. [Stories](stories.md): test rules as given, when, then.
+14. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
 
 ## Crates
 
 | Crate | What it holds |
 | --- | --- |
 | `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
-| `domain-memory` | `Memory`: runs a model, its views and policies in memory. |
+| `domain-memory` | `Memory`: runs a model, its views, policies, projections and sagas in memory. |
 | `domain-sqlite` | `Sqlite`: keeps a `Memory` in a file. |
 | `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses, in process or connected. |
 | `domain-server` | `Server`: serves an Api over WebSocket. |
@@ -63,4 +69,4 @@ No UI framework and no async runtime. Everything except `domain-sqlite`, `domain
 
 ## Not yet
 
-Projections and sagas; a browser transport for `Client::connect`; `wss://`; optimistic updates (`predict`); more than one server process. See the design sketch's build order.
+A browser transport for `Client::connect`; `wss://`; optimistic updates (`predict`); more than one server process. See the design sketch's build order.

@@ -73,6 +73,14 @@ pub struct ThawAccount;
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountThawed;
 
+/// Gives back money a transfer took, when the transfer can't finish. It never rejects, so undoing
+/// a transfer can't get stuck; it records nothing on an account that isn't open.
+#[derive(Command, Debug, Serialize, Deserialize)]
+#[command(target = AccountId, events(MoneyDeposited), reply = Balance)]
+pub struct RefundMoney {
+    pub amount: u64,
+}
+
 // Shared by deposits and withdrawals.
 
 #[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -233,7 +233,7 @@ impl Memory {
 }
 
 /// Names a command across aggregates: `Transfer.ExpireTransfer`.
-fn command_key<C>() -> String
+pub(crate) fn command_key<C>() -> String
 where
     C: Command,
     AggregateOf<C::Target>: Aggregate,

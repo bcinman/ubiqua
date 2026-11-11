@@ -17,7 +17,37 @@ domain-server.workspace = true
 domain-sqlite.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "rayon"] }
 domain-story.workspace = true
 domain-memory.workspace = true
 domain-websocket.workspace = true
 serde_json.workspace = true
+
+# `cargo bench -p bank`; see docs/benchmarks.md. Only the criterion benches, so criterion's
+# options such as `--save-baseline` reach them alone.
+[lib]
+bench = false
+
+[[bin]]
+name = "bank"
+bench = false
+
+[[bench]]
+name = "commands"
+harness = false
+
+[[bench]]
+name = "views"
+harness = false
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "workflows"
+harness = false
+
+[[bench]]
+name = "client"
+harness = false

@@ -53,6 +53,7 @@ the same Client in process, or over WebSocket to a server shared by many users
 13. [Offline and instant](offline.md): show a command before its answer; send while offline.
 14. [Stories](stories.md): test rules as given, when, then.
 15. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+16. [Benchmarks](benchmarks.md): what's measured, and how to compare a change.
 
 ## Crates
 

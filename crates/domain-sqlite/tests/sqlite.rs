@@ -1,5 +1,6 @@
 use domain::{
-    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Model, Policy, SendError, StreamId, Timestamp, ViewCx,
+    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Model, Policy, Reply, SendError, StreamId, Timestamp,
+    ViewCx,
 };
 use domain_memory::{Memory, PolicyCx, PolicyError, React};
 use domain_sqlite::Sqlite;
@@ -51,6 +52,9 @@ impl Decide<Credit> for Wallet {
     fn decide(total: &u64, cmd: &Credit, _: &Cx) -> Decision<Credit> {
         Ok(vec![Credited { amount: cmd.amount, total: total + cmd.amount }.into()])
     }
+}
+
+impl Reply<Wallet> for Credit {
     fn reply(total: &u64) -> u64 {
         *total
     }
@@ -60,14 +64,12 @@ impl Decide<Claim> for Wallet {
     fn decide(total: &u64, _: &Claim, _: &Cx) -> Decision<Claim> {
         if *total == 0 { Err(Empty.into()) } else { Ok(vec![]) }
     }
-    fn reply(_: &u64) {}
 }
 
 impl Decide<Note> for Wallet {
     fn decide(_: &u64, _: &Note, _: &Cx) -> Decision<Note> {
         Ok(vec![])
     }
-    fn reply(_: &u64) {}
 }
 
 #[derive(Model)]

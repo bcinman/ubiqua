@@ -78,16 +78,12 @@ impl Decide<RequestTransfer> for Transfer {
         let by = cx.actor::<User>().map(|User(name)| name.clone());
         Ok(vec![TransferRequested { from: cmd.from.clone(), to: cmd.to.clone(), amount: cmd.amount, by }.into()])
     }
-
-    fn reply(_: &TransferState) {}
 }
 
 impl Decide<CompleteTransfer> for Transfer {
     fn decide(state: &TransferState, _: &CompleteTransfer, _: &Cx) -> Decision<CompleteTransfer> {
         Ok(if *state == TransferState::Pending { vec![TransferCompleted.into()] } else { vec![] })
     }
-
-    fn reply(_: &TransferState) {}
 }
 
 impl Decide<FailTransfer> for Transfer {
@@ -95,8 +91,6 @@ impl Decide<FailTransfer> for Transfer {
         let failed = TransferFailed { reason: cmd.reason.clone() };
         Ok(if *state == TransferState::Pending { vec![failed.into()] } else { vec![] })
     }
-
-    fn reply(_: &TransferState) {}
 }
 
 /// Starts a transfer's saga once it's requested. Nobody waits for it.

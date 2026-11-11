@@ -33,14 +33,12 @@ impl Decide<Note> for Log {
     fn decide(_: &(), cmd: &Note, _: &Cx) -> Decision<Note> {
         Ok(vec![Noted(cmd.0.clone()).into()])
     }
-    fn reply(_: &()) {}
 }
 
 impl Decide<Refuse> for Log {
     fn decide(_: &(), _: &Refuse, _: &Cx) -> Decision<Refuse> {
         Err(No.into())
     }
-    fn reply(_: &()) {}
 }
 
 #[derive(Model)]

@@ -55,14 +55,12 @@ impl Decide<Credit> for Wallet {
     fn decide(total: &u64, cmd: &Credit, _: &Cx) -> Decision<Credit> {
         Ok(vec![Credited { owner: cmd.owner.clone(), amount: cmd.amount, total_after: total + cmd.amount }.into()])
     }
-    fn reply(_: &u64) {}
 }
 
 impl Decide<Note> for Wallet {
     fn decide(_: &u64, _: &Note, _: &Cx) -> Decision<Note> {
         Ok(vec![Noted.into()])
     }
-    fn reply(_: &u64) {}
 }
 
 #[domain::command(target = ClubId, events(Joined))]
@@ -87,7 +85,6 @@ impl Decide<Join> for Club {
     fn decide(_: &(), cmd: &Join, _: &Cx) -> Decision<Join> {
         Ok(vec![Joined { member: cmd.member.clone() }.into()])
     }
-    fn reply(_: &()) {}
 }
 
 /// Each wallet's total. Emits every credit it applies.

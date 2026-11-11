@@ -41,6 +41,18 @@ error[E0277]: `Door` doesn't handle `Close`
   needs `impl Decide<Close> for Door`, with every event of `Close` in its `events(..)`
 ```
 
+## A reply nothing computes
+
+```rust
+#[command(target = DoorId, events(Closed), reply = bool)]
+pub struct Close;
+// no impl Reply<Door> for Close
+```
+
+```text
+error[E0277]: `Close` declares a reply but has no `impl Reply<Door>`
+```
+
 ## A command's event missing from the aggregate
 
 ```rust

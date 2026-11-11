@@ -31,7 +31,6 @@ impl Decide<Register> for Customer {
     fn decide(_: &(), _: &Register, _: &Cx) -> Decision<Register> {
         Ok(vec![CustomerRegistered.into()])
     }
-    fn reply(_: &()) {}
 }
 
 #[domain::command(target = AccountId, events(AccountOpened), rejects(AlreadyOpen))]
@@ -103,28 +102,24 @@ impl Decide<OpenAccount> for Account {
         }
         Ok(vec![AccountOpened { owner: cmd.owner.clone() }.into()])
     }
-    fn reply(_: &AccountState) {}
 }
 
 impl Decide<Withdraw> for Account {
     fn decide(_: &AccountState, cmd: &Withdraw, _: &Cx) -> Decision<Withdraw> {
         Ok(vec![Withdrawn { amount: cmd.amount }.into()])
     }
-    fn reply(_: &AccountState) {}
 }
 
 impl Decide<Freeze> for Account {
     fn decide(state: &AccountState, _: &Freeze, _: &Cx) -> Decision<Freeze> {
         Ok(if state.frozen { vec![] } else { vec![Frozen.into()] })
     }
-    fn reply(_: &AccountState) {}
 }
 
 impl Decide<Thaw> for Account {
     fn decide(state: &AccountState, _: &Thaw, _: &Cx) -> Decision<Thaw> {
         Ok(if state.frozen { vec![Thawed.into()] } else { vec![] })
     }
-    fn reply(_: &AccountState) {}
 }
 
 // The fraud scorer, in the model's words.

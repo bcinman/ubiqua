@@ -111,7 +111,7 @@ fn rejection_impl(input: &DeriveInput) -> Tokens {
 /// `#[command(target = Id, events(..), rejects(..), reply = Type)]`
 ///
 /// Generates `<Name>Event` and `<Name>Rejection` enums and `impl Command`. `rejects` and `reply`
-/// are optional; without `reply` the reply is `()`.
+/// are optional; without `reply` the reply is `()`, and `impl Reply` for every aggregate.
 #[proc_macro_derive(Command, attributes(command))]
 pub fn derive_command(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -147,7 +147,7 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     })?;
     let target =
         target.ok_or_else(|| syn::Error::new_spanned(name, "a command needs `#[command(target = SomeId, ..)]`"))?;
-    let reply = reply.map_or_else(|| quote!(()), |t| quote!(#t));
+    let reply_type = reply.as_ref().map_or_else(|| quote!(()), |t| quote!(#t));
     let tag = name.to_string();
     let event_enum = format_ident!("{}Event", name);
     let rejection_enum = format_ident!("{}Rejection", name);
@@ -162,11 +162,23 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let never_rejects = rejects
         .is_empty()
         .then(|| quote!(impl #impl_generics ::domain::NeverRejects for #name #ty_generics #where_clause {}));
+    // Without `reply = ..` the reply is `()` on every aggregate, so nobody writes an empty one.
+    let unit_reply = reply.is_none().then(|| {
+        let mut generics = input.generics.clone();
+        generics.params.push(syn::parse_quote!(__A: ::domain::Aggregate));
+        let (impl_generics, _, _) = generics.split_for_impl();
+        quote! {
+            impl #impl_generics ::domain::Reply<__A> for #name #ty_generics #where_clause {
+                fn reply(_: &<__A as ::domain::Aggregate>::State) {}
+            }
+        }
+    });
 
     Ok(quote! {
         #event_union
         #rejection_union
         #never_rejects
+        #unit_reply
 
         impl<__E> ::domain::Widen<__E> for #event_enum
         where #( __E: ::std::convert::From<#events>, )*
@@ -189,7 +201,7 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
             type Target = #target;
             type Event = #event_enum;
             type Rejection = #rejection_enum;
-            type Reply = #reply;
+            type Reply = #reply_type;
         }
     })
 }
@@ -255,6 +267,7 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
             #[allow(dead_code)]
             fn checks() {
                 ::domain::__assert_evolve::<#name>();
+                #( ::domain::__assert_reply::<#name, #commands>(); )*
                 #( ::domain::__assert_handles::<#name, #commands>(); )*
             }
         };

@@ -40,7 +40,7 @@ the same Client in process, or over WebSocket to a server shared by many users
 
 1. [Getting started](getting-started.md): build the bank in `examples/bank`.
 2. [Commands and events](commands.md): declare what a command asks for and how it can end.
-3. [Aggregates](aggregates.md): state, `evolve`, `decide`, `reply`.
+3. [Aggregates](aggregates.md): state, `evolve`, `decide`, `Reply`.
 4. [Views](views.md): read models, live feeds, reading your own write.
 5. [Running a model](running.md): `Memory`, retries, threads, the web.
 6. [Keep it on disk](storage.md): SQLite, restarts, changing a view.

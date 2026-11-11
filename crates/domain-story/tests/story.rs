@@ -1,4 +1,4 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Timestamp};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply, Timestamp};
 use domain_story::Story;
 
 domain::id!(
@@ -46,7 +46,9 @@ impl Decide<Toggle> for Light {
         }
         Ok(vec![Switched { on: !state.on, at: cx.now() }.into()])
     }
+}
 
+impl Reply<Light> for Toggle {
     fn reply(state: &Lamp) -> bool {
         state.on
     }

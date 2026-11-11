@@ -136,28 +136,43 @@ pub type Decision<C> = Result<Vec<<C as Command>::Event>, <C as Command>::Reject
 pub trait Decide<C: Command>: Evolve {
     /// Decide the command against the current state. Return `Ok(vec![])` when there's nothing to record.
     fn decide(state: &Self::State, command: &C, cx: &Cx) -> Decision<C>;
-    /// The reply, computed from the state after the events are applied.
-    fn reply(state: &Self::State) -> C::Reply;
 }
 
-/// Everything a host needs to run `C` on this aggregate: it decides `C`, `C` targets its id, and
-/// `C`'s events are among its own. Implemented automatically; use it as a bound.
+/// What a command returns to its caller, computed from the aggregate's state after its events
+/// are applied. Implement it for a command with `reply = ..`; `#[derive(Command)]` implements it
+/// for every aggregate when the command declares no reply.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` declares a reply but has no `impl Reply<{A}>`",
+    label = "implement `Reply<{A}>` for `{Self}`"
+)]
+pub trait Reply<A: Aggregate>: Command {
+    fn reply(state: &A::State) -> Self::Reply;
+}
+
+/// Everything a host needs to run `C` on this aggregate: it decides `C`, `C` targets its id,
+/// `C`'s events are among its own, and `C` has a reply. Implemented automatically; use it as a bound.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` doesn't handle `{C}`",
     label = "needs `impl Decide<{C}> for {Self}`, with every event of `{C}` in its `events(..)`"
 )]
 pub trait Handles<C: Command>: Decide<C> {
     fn widen(event: C::Event) -> Self::Event;
+    /// `C`'s [`Reply`] on this aggregate.
+    fn reply(state: &Self::State) -> C::Reply;
 }
 
 impl<A, C> Handles<C> for A
 where
     A: Decide<C>,
-    C: Command<Target = A::Id>,
+    C: Command<Target = A::Id> + Reply<A>,
     C::Event: Widen<A::Event>,
 {
     fn widen(event: C::Event) -> A::Event {
         event.widen()
+    }
+
+    fn reply(state: &A::State) -> C::Reply {
+        C::reply(state)
     }
 }
 
@@ -249,6 +264,9 @@ macro_rules! id {
 
 #[doc(hidden)]
 pub fn __assert_handles<A: Handles<C>, C: Command>() {}
+
+#[doc(hidden)]
+pub fn __assert_reply<A: Aggregate, C: Reply<A>>() {}
 
 #[doc(hidden)]
 pub fn __assert_evolve<A: Evolve>() {}

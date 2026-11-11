@@ -321,7 +321,7 @@ impl Memory {
             let command_id = Some(command_id.clone());
             recorded.push(Envelope { stream: stream.clone(), seq, at, command_id, event });
         }
-        let reply = <AggregateOf<C::Target> as domain::Decide<C>>::reply(&state);
+        let reply = <AggregateOf<C::Target> as Handles<C>>::reply(&state);
         let version = instance.events.len() as u64 + recorded.len() as u64;
         let receipt = Receipt { stream, version, command_id: command_id.clone(), events, reply };
 

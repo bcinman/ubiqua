@@ -81,7 +81,9 @@ impl Decide<WithdrawMoney> for Account {
         }
         Ok(vec![MoneyWithdrawn { amount: cmd.amount, balance_after: balance - cmd.amount }.into()])
     }
+}
 
+impl Reply<Account> for WithdrawMoney {
     fn reply(state: &AccountState) -> Balance {
         Balance { balance: open(state).unwrap_or(0) }
     }

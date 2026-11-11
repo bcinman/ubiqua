@@ -59,21 +59,18 @@ impl Decide<Open> for Account {
     fn decide(_: &i64, cmd: &Open, _: &Cx) -> Decision<Open> {
         Ok(vec![Opened { owner: cmd.owner.clone() }.into()])
     }
-    fn reply(_: &i64) {}
 }
 
 impl Decide<Move> for Account {
     fn decide(balance: &i64, cmd: &Move, _: &Cx) -> Decision<Move> {
         Ok(vec![Moved { amount: cmd.amount, balance_after: balance + cmd.amount }.into()])
     }
-    fn reply(_: &i64) {}
 }
 
 impl Decide<Close> for Account {
     fn decide(_: &i64, _: &Close, _: &Cx) -> Decision<Close> {
         Ok(vec![Closed.into()])
     }
-    fn reply(_: &i64) {}
 }
 
 /// Per account. Emits every input it applies, with its state after it.

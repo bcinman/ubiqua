@@ -12,8 +12,8 @@
 //! # #[domain::event] pub struct Moved;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Moved), commands(Open, Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
-//! # impl Decide<Open> for Door { fn decide(_: &(), _: &Open, _: &Cx) -> Decision<Open> { Ok(vec![]) } fn reply(_: &()) {} }
-//! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &()) {} }
+//! # impl Decide<Open> for Door { fn decide(_: &(), _: &Open, _: &Cx) -> Decision<Open> { Ok(vec![]) } }
+//! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } }
 //! # #[derive(Model)] #[model(aggregates(Door))] pub struct Doors;
 //! #[derive(Api)]
 //! #[api(commands(Open))]
@@ -33,7 +33,7 @@
 //! # #[domain::rejection] pub struct Jammed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
-//! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &()) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } }
 //! #[domain::command(target = DoorId, events(Closed), rejects(Jammed))]
 //! pub struct Close;
 //!

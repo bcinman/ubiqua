@@ -25,7 +25,6 @@ impl Decide<Bump> for Counter {
     fn decide(_: &(), _: &Bump, _: &Cx) -> Decision<Bump> {
         Ok(vec![Bumped.into()])
     }
-    fn reply(_: &()) {}
 }
 
 #[derive(Model)]

@@ -1,5 +1,5 @@
 use crate::*;
-use domain::{Aggregate, Cx, Decide, Decision, Evolve};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply};
 
 #[derive(Aggregate)]
 #[aggregate(
@@ -64,8 +64,6 @@ impl Decide<OpenAccount> for Account {
             AccountState::Open { .. } => Err(AlreadyOpen.into()),
         }
     }
-
-    fn reply(_: &AccountState) {}
 }
 
 impl Decide<DepositMoney> for Account {
@@ -73,7 +71,9 @@ impl Decide<DepositMoney> for Account {
         let balance = open(state)?;
         Ok(vec![MoneyDeposited { amount: cmd.amount, balance_after: balance + cmd.amount }.into()])
     }
+}
 
+impl Reply<Account> for DepositMoney {
     fn reply(state: &AccountState) -> Balance {
         balance(state)
     }
@@ -86,7 +86,9 @@ impl Decide<RefundMoney> for Account {
             Err(NotOpen) => vec![],
         })
     }
+}
 
+impl Reply<Account> for RefundMoney {
     fn reply(state: &AccountState) -> Balance {
         balance(state)
     }
@@ -104,7 +106,9 @@ impl Decide<WithdrawMoney> for Account {
         }
         Ok(vec![MoneyWithdrawn { amount: cmd.amount, balance_after: balance - cmd.amount }.into()])
     }
+}
 
+impl Reply<Account> for WithdrawMoney {
     fn reply(state: &AccountState) -> Balance {
         balance(state)
     }
@@ -117,8 +121,6 @@ impl Decide<FreezeAccount> for Account {
             _ => vec![],
         })
     }
-
-    fn reply(_: &AccountState) {}
 }
 
 impl Decide<ThawAccount> for Account {
@@ -128,6 +130,4 @@ impl Decide<ThawAccount> for Account {
             _ => vec![],
         })
     }
-
-    fn reply(_: &AccountState) {}
 }

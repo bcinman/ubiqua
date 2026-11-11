@@ -1,4 +1,4 @@
-use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, SendError, View, ViewCx};
+use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, Reply, SendError, View, ViewCx};
 use domain_client::{Client, LiveView, Pending, Read, ReadError};
 use domain_memory::Memory;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +47,9 @@ impl Decide<Add> for Counter {
         assert!(cmd.n != 666, "Counter can't add 666");
         Ok(vec![Added { n: cmd.n, total: total + cmd.n }.into()])
     }
+}
+
+impl Reply<Counter> for Add {
     fn reply(total: &i64) -> i64 {
         *total
     }
@@ -70,7 +73,6 @@ impl Decide<Ping> for Other {
     fn decide(_: &(), _: &Ping, _: &Cx) -> Decision<Ping> {
         Ok(vec![Pinged.into()])
     }
-    fn reply(_: &()) {}
 }
 
 #[derive(View)]

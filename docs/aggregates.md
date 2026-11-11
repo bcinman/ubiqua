@@ -58,10 +58,6 @@ impl Decide<WithdrawMoney> for Account {
         }
         Ok(vec![MoneyWithdrawn { amount: cmd.amount, balance_after: balance - cmd.amount }.into()])
     }
-
-    fn reply(state: &AccountState) -> Balance {
-        Balance { balance: open(state).unwrap_or(0) }
-    }
 }
 ```
 
@@ -73,7 +69,19 @@ Three possible answers:
 | `Ok(vec![])` | accepted, nothing to record (already in that state) |
 | `Err(rejection.into())` | refused, nothing recorded |
 
-`reply` runs after `evolve`, on the new state.
+## reply: what the caller gets back
+
+A command with `reply = Balance` says how to compute it from the new state, after `evolve`:
+
+```rust
+impl Reply<Account> for WithdrawMoney {
+    fn reply(state: &AccountState) -> Balance {
+        Balance { balance: open(state).unwrap_or(0) }
+    }
+}
+```
+
+A command without `reply` replies `()`, and needs no `impl Reply`. The reply is stored with the receipt, so a retry gets the same one.
 
 ## Share a check with `?`
 

@@ -1,4 +1,4 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, SendError};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply, SendError};
 use domain_memory::Memory;
 use std::sync::Arc;
 
@@ -39,7 +39,9 @@ impl Decide<Increment> for Counter {
     fn decide(state: &u64, _: &Increment, _: &Cx) -> Decision<Increment> {
         Ok(vec![Incremented { value_after: state + 1 }.into()])
     }
+}
 
+impl Reply<Counter> for Increment {
     fn reply(state: &u64) -> u64 {
         *state
     }
@@ -53,8 +55,6 @@ impl Decide<IncrementBelow> for Counter {
         // Two events, so a failure on the second shows whether the first was kept.
         Ok(vec![Incremented { value_after: state + 1 }.into(), Incremented { value_after: state + 2 }.into()])
     }
-
-    fn reply(_: &u64) {}
 }
 
 const BOOM: u64 = 1_000_013;

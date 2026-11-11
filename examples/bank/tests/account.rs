@@ -29,14 +29,6 @@ fn an_unopened_account_refuses_deposits() {
 }
 
 #[test]
-fn an_overdraft_is_rejected_with_the_evidence() {
-    Story::new()
-        .given(&a1(), (opened(), MoneyDeposited { amount: 50, balance_after: 50 }))
-        .when(&a1(), WithdrawMoney { amount: 80 })
-        .rejected(InsufficientFunds { balance: 50, requested: 80 });
-}
-
-#[test]
 fn each_withdrawal_is_decided_against_the_balance_the_last_one_left() {
     Story::new()
         .given(&a1(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))

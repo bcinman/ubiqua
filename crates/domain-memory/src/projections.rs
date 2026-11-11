@@ -19,7 +19,7 @@ use std::time::Duration;
 
 /// How a projection writes its inputs to its store. Write it as an `async fn`:
 ///
-/// ```ignore
+/// ```text
 /// impl Project for Ledger {
 ///     async fn project(&self, account: &AccountId, batch: Vec<ProjectionInput<Self>>) -> Result<(), ProjectionError> { .. }
 /// }

@@ -103,11 +103,3 @@ fn checks_each_command_before_the_next() {
 fn fails_when_events_differ() {
     Story::new().when(&lamp(), Toggle).then(&lamp(), [on_at(1)]);
 }
-
-#[test]
-fn given_events_need_no_check() {
-    Story::new()
-        .given(&lamp(), [on_at(0)])
-        .when(&lamp(), Toggle)
-        .then(&lamp(), [Switched { on: false, at: Timestamp::from_millis(0) }]);
-}

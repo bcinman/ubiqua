@@ -41,7 +41,7 @@ impl Calls for Answers<'_> {
 impl Memory {
     /// Answers `system`'s calls with `adapter`, the code that talks to the vendor.
     ///
-    /// ```ignore
+    /// ```text
     /// let bank = Memory::new().with::<Bank>().external(FraudCheck, VendorFraud::new(key));
     /// ```
     pub fn external<S: Adapter<I>, I>(mut self, _system: S, adapter: I) -> Self {

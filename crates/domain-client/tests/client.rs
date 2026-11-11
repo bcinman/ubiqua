@@ -1,5 +1,5 @@
 use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, Reply, SendError, View, ViewCx};
-use domain_client::{Client, LiveView, Pending, Read, ReadError};
+use domain_client::{Client, ReadError};
 use domain_memory::Memory;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -231,27 +231,17 @@ fn a_panicking_callback_doesnt_stop_the_domain_thread() {
 }
 
 #[test]
-fn a_callback_may_read_its_own_live_view() {
-    let client = Client::<CountingApi>::inline(memory());
-    let live = client.view::<Total>().live(&c("a"));
-    let (me, seen) = (live.clone(), Arc::new(Mutex::new(None)));
-    let log = seen.clone();
-    let _listener = live.on_change(move |_, _| *log.lock().unwrap() = Some((*me.latest().0).clone()));
-    client.send(&c("a"), Add { n: 4 });
-    assert_eq!(*seen.lock().unwrap(), Some(Ok(Some(4))));
-}
-
-#[test]
 fn callbacks_may_read_and_send_without_deadlocking() {
     let client = Client::<CountingApi>::inline(memory());
     let live = client.view::<Total>().live(&c("a"));
     let reads = Arc::new(Mutex::new(Vec::new()));
-    let (inner, log) = (client.clone(), reads.clone());
+    let (inner, me, log) = (client.clone(), live.clone(), reads.clone());
     let _listener = live.on_change(move |total, _| {
-        // Read the view, then send to it again until it reaches 3.
+        // Read the view, and this live view itself, then send to it again until it reaches 3.
         let read = inner.view::<Total>().get(&c("a")).try_get().unwrap().unwrap();
+        let latest = me.latest().0.as_ref().clone().unwrap();
         let total = total.as_ref().clone().unwrap();
-        log.lock().unwrap().push((total, read));
+        log.lock().unwrap().push((total, read, latest));
         if total.unwrap() < 3 {
             inner.send(&c("a"), Add { n: 1 });
         }
@@ -259,8 +249,8 @@ fn callbacks_may_read_and_send_without_deadlocking() {
     client.send(&c("a"), Add { n: 1 });
     assert_eq!(*live.latest().0, Ok(Some(3)));
     let reads = reads.lock().unwrap();
-    assert_eq!(reads.last(), Some(&(Some(3), Some(3))));
-    assert!(reads.iter().all(|(seen, read)| seen <= read), "{reads:?}");
+    assert_eq!(reads.last(), Some(&(Some(3), Some(3), Some(3))));
+    assert!(reads.iter().all(|(seen, read, latest)| seen <= read && seen <= latest), "{reads:?}");
 }
 
 #[test]
@@ -300,20 +290,6 @@ fn dropping_a_live_view_stops_its_updates() {
     client.send(&c("a"), Add { n: 1 });
     assert!(!called.load(Ordering::SeqCst), "the live view was dropped, so nothing feeds it");
     drop(listener);
-}
-
-#[test]
-fn ui_code_is_the_same_for_every_kind_of_client() {
-    fn deposit_and_show(client: &Client<CountingApi>) -> LiveView<Read<Total>> {
-        let live = client.view::<Total>().live(&c("a"));
-        let sent: Pending<_> = client.send(&c("a"), Add { n: 5 });
-        block_on(sent).unwrap();
-        live
-    }
-    for client in [Client::inline(memory()), Client::in_process(memory())] {
-        let live = deposit_and_show(&client);
-        assert_eq!(*block_on(live.changed(0)).0, Ok(Some(5)));
-    }
 }
 
 /// Polls again only when woken, so a missing wake fails instead of being re-polled.

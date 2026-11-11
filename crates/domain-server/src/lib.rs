@@ -2,7 +2,7 @@
 //! `domain_client::Client::connect` exactly as they would in process. Many clients can connect at
 //! once: each sees the others' changes as they commit.
 //!
-//! ```ignore
+//! ```text
 //! let memory = Arc::new(Memory::new().with::<Bank>());
 //! let server = Server::<BankApi>::new(memory).sessions(|token| users.check(token)).listen("0.0.0.0:7878")?;
 //! server.wait();

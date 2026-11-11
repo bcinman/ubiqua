@@ -49,6 +49,9 @@
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Opened;
 //! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed, Opened), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { decide() } }
 //! fn decide() -> Decision<Close> {
 //!     Ok(vec![Opened.into()])
 //! }
@@ -63,6 +66,9 @@
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
 //! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Locked;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { decide() } }
 //! fn decide() -> Decision<Close> {
 //!     Err(Locked.into())
 //! }

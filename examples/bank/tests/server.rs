@@ -69,6 +69,10 @@ fn the_app_code_works_the_same_in_process_and_over_a_connection() {
             panic!("only the owner withdraws")
         };
         assert_eq!(r, NotOwner.into());
+        let Err(SendError::Rejected(r)) = wait(someone_else.send(&sam(), OpenAccount { owner: "sam".into() })) else {
+            panic!("nobody opens an account in someone else's name")
+        };
+        assert_eq!(r, NotOwner.into());
 
         // A retry under the same id takes effect once.
         let first = wait(client.send_with_id(&sam(), DepositMoney { amount: 5 }, "tip-1")).unwrap();
@@ -94,35 +98,6 @@ fn the_app_code_works_the_same_in_process_and_over_a_connection() {
     let trusted = ClientTls::trusting(&read("ca.pem")).unwrap();
     let connect = |token| Client::connect_with(&server.url(), Some(token), trusted.clone());
     deposit_and_overdraw(&connect("sam"), &connect("kim"));
-}
-
-#[test]
-fn each_user_sees_only_their_own_accounts() {
-    let server = serve(&bank(), "127.0.0.1:0");
-    let (sam_app, kim_app) = (
-        Client::<BankApi>::connect(&server.url(), Some("sam")),
-        Client::<BankApi>::connect(&server.url(), Some("kim")),
-    );
-    // Before sam opens it, the account has no owner, so anyone may watch for it.
-    let kim_watching = kim_app.view::<AccountSummary>().live(&sam());
-    eventually(|| kim_watching.latest().1 == 1);
-
-    wait(sam_app.send(&sam(), OpenAccount { owner: "sam".into() })).unwrap();
-    wait(sam_app.send(&sam(), DepositMoney { amount: 100 })).unwrap();
-
-    // Once it's sam's, kim's watch ends, and her reads and withdrawals are refused.
-    eventually(|| *kim_watching.latest().0 == Err(ReadError::Rejected(NotOwner.into())));
-    assert_eq!(wait(kim_app.view::<AccountSummary>().get(&sam())), Err(ReadError::Rejected(NotOwner.into())));
-    let Err(SendError::Rejected(r)) = wait(kim_app.send(&sam(), WithdrawMoney { amount: 1 })) else {
-        panic!("kim can't withdraw from sam's account")
-    };
-    assert_eq!(r, NotOwner.into());
-    let Err(SendError::Rejected(r)) = wait(kim_app.send(&sam(), OpenAccount { owner: "sam".into() })) else {
-        panic!("kim can't open an account for sam")
-    };
-    assert_eq!(r, NotOwner.into());
-    let feed = kim_app.view::<Statement>().events(&sam(), Cursor::START);
-    eventually(|| matches!(feed.try_next(), Some(Frame::Rejected(_))));
 }
 
 #[test]

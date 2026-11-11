@@ -176,9 +176,9 @@ fn an_account_shows_as_it_stood_at_each_version() {
 
     let then = telemetry.aggregate("Account/sam-main", Some(2)).unwrap().unwrap();
     assert_eq!((then.version, then.events.len(), then.id.clone()), (2, 2, serde_json::json!("sam-main")));
-    assert!(then.state.contains("balance: 100"), "{}", then.state);
+    assert!(then.state.contains("balance: 100,"), "{}", then.state);
     let now = telemetry.aggregate("Account/sam-main", None).unwrap().unwrap();
-    assert!(now.state.contains("balance: 70"), "{}", now.state);
+    assert!(now.state.contains("balance: 70,"), "{}", now.state);
     assert_eq!(telemetry.aggregate("Account/nobody", None), Ok(None));
     assert_eq!(telemetry.aggregate("Nothing/sam-main", None), Ok(None));
 
@@ -220,7 +220,7 @@ fn a_replay_reads_what_an_earlier_run_kept_on_disk() {
     let replay = bank.telemetry().trace(Since::Start).unwrap().drain();
     assert_eq!(without_commands(&replay), shown);
     let then = bank.telemetry().aggregate("Account/sam-main", Some(3)).unwrap().unwrap();
-    assert!(then.state.contains("balance: 70"), "{}", then.state);
+    assert!(then.state.contains("balance: 70,"), "{}", then.state);
     let _ = std::fs::remove_file(&path);
 }
 

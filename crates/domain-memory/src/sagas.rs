@@ -28,7 +28,7 @@ use std::time::Duration;
 
 /// What a saga does. Write it as an `async fn` that takes its steps through `cx`:
 ///
-/// ```ignore
+/// ```text
 /// impl Run for ExecuteTransfer {
 ///     async fn run(self, cx: &SagaCx<Self>) -> Result<(), ExecuteTransferRejection> {
 ///         cx.send("debit", &self.from, WithdrawMoney { amount: self.amount })

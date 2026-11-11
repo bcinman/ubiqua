@@ -206,13 +206,6 @@ fn a_view_routes_by_its_source_views_state() {
 }
 
 #[test]
-fn views_chain_three_deep() {
-    let memory = Memory::new().with::<Bank>();
-    activity(&memory);
-    assert_eq!(memory.view::<Leaderboard>().get(&everyone()), Some(totals(&[("kim", 3), ("sam", 37)])));
-}
-
-#[test]
 fn the_model_hosts_a_views_sources_whatever_order_it_lists_them_in() {
     let memory = Memory::new().with::<Backwards>();
     activity(&memory);

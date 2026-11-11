@@ -1,6 +1,6 @@
 //! Keeps a domain model in a SQLite file, so an app's data outlives it.
 //!
-//! ```ignore
+//! ```text
 //! let bank = Memory::new().persist_to(Sqlite::open("bank.db")?).with::<Bank>();
 //! ```
 //!

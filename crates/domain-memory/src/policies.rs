@@ -23,7 +23,7 @@ use std::time::Duration;
 
 /// How a policy handles its events. Write it as an `async fn`:
 ///
-/// ```ignore
+/// ```text
 /// impl React for FraudReview {
 ///     async fn react(&self, cx: &PolicyCx<Self>, input: FraudReviewInput) -> Result<(), PolicyError> { .. }
 /// }

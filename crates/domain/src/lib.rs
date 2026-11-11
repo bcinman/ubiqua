@@ -73,6 +73,53 @@ pub trait Rejections:
     fn name(&self) -> &'static str;
 }
 
+/// Several events, to record or check together: an array or `Vec` of one kind, or a tuple of
+/// different kinds that each convert into `E`, such as `(AccountOpened { .. }, MoneyDeposited { .. })`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` isn't a list of events that convert into `{E}`",
+    label = "pass an array, a `Vec`, or a tuple of up to 12 events"
+)]
+pub trait IntoEvents<E> {
+    fn into_events(self) -> Vec<E>;
+}
+
+impl<E, T: Into<E>, const N: usize> IntoEvents<E> for [T; N] {
+    fn into_events(self) -> Vec<E> {
+        self.into_iter().map(Into::into).collect()
+    }
+}
+
+impl<E, T: Into<E>> IntoEvents<E> for Vec<T> {
+    fn into_events(self) -> Vec<E> {
+        self.into_iter().map(Into::into).collect()
+    }
+}
+
+macro_rules! tuple_events {
+    ($($t:ident),+) => {
+        impl<E, $($t: Into<E>),+> IntoEvents<E> for ($($t,)+) {
+            #[allow(non_snake_case)]
+            fn into_events(self) -> Vec<E> {
+                let ($($t,)+) = self;
+                vec![$($t.into()),+]
+            }
+        }
+    };
+}
+
+tuple_events!(A);
+tuple_events!(A, B);
+tuple_events!(A, B, C);
+tuple_events!(A, B, C, D);
+tuple_events!(A, B, C, D, F);
+tuple_events!(A, B, C, D, F, G);
+tuple_events!(A, B, C, D, F, G, H);
+tuple_events!(A, B, C, D, F, G, H, I);
+tuple_events!(A, B, C, D, F, G, H, I, J);
+tuple_events!(A, B, C, D, F, G, H, I, J, K);
+tuple_events!(A, B, C, D, F, G, H, I, J, K, L);
+tuple_events!(A, B, C, D, F, G, H, I, J, K, L, M);
+
 /// Converts a command's events into an aggregate's events. `#[derive(Command)]` implements it for
 /// every aggregate whose events include all of the command's.
 pub trait Widen<E>: Events {

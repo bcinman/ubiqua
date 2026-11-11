@@ -152,7 +152,7 @@ let summary = bank.view::<AccountSummary>().at_least(&receipt).unwrap().get(&sam
 #[test]
 fn an_overdraft_is_rejected_with_the_evidence() {
     Story::new()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 50, balance_after: 50 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 50, balance_after: 50 }))
         .when(&a1(), WithdrawMoney { amount: 80 })
         .rejected(InsufficientFunds { balance: 50, requested: 80 });
 }

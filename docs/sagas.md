@@ -174,10 +174,10 @@ With [SQLite](storage.md), unfinished runs carry on after a restart.
 Story::new()
     .policy(TransferExecution)
     .saga::<ExecuteTransfer>()
-    .given(&sam(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+    .given(&sam(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
     .when(&t1(), RequestTransfer { from: sam(), to: kim(), amount: 30 })       // kim has no account
-    .then(&t1(), [TransferEvent::from(requested(30)), failed(DestinationClosed)])
-    .then(&sam(), [AccountEvent::from(MoneyWithdrawn { amount: 30, balance_after: 70 }), MoneyDeposited { amount: 30, balance_after: 100 }.into()])
+    .then(&t1(), (requested(30), failed(DestinationClosed)))
+    .then(&sam(), (MoneyWithdrawn { amount: 30, balance_after: 70 }, MoneyDeposited { amount: 30, balance_after: 100 }))
     .then_none(&kim())
     .saga_status::<ExecuteTransfer>(&t1(), SagaStatus::Rejected(DestinationClosed.into()));
 ```

@@ -15,13 +15,10 @@ fn t1() -> TransferId {
 }
 
 fn bank() -> Story {
-    Story::new().policy(TransferExecution).saga::<ExecuteTransfer>().given(
-        &sam(),
-        [
-            AccountEvent::from(AccountOpened { owner: "sam".into() }),
-            MoneyDeposited { amount: 100, balance_after: 100 }.into(),
-        ],
-    )
+    Story::new()
+        .policy(TransferExecution)
+        .saga::<ExecuteTransfer>()
+        .given(&sam(), (AccountOpened { owner: "sam".into() }, MoneyDeposited { amount: 100, balance_after: 100 }))
 }
 
 fn request(amount: u64) -> RequestTransfer {
@@ -41,7 +38,7 @@ fn a_transfer_moves_the_money_and_completes() {
     bank()
         .given(&kim(), [AccountOpened { owner: "kim".into() }])
         .when(&t1(), request(30))
-        .then(&t1(), [TransferEvent::from(requested(30)), TransferCompleted.into()])
+        .then(&t1(), (requested(30), TransferCompleted))
         .then(&sam(), [MoneyWithdrawn { amount: 30, balance_after: 70 }])
         .then(&kim(), [MoneyDeposited { amount: 30, balance_after: 30 }])
         .saga_status::<ExecuteTransfer>(&t1(), SagaStatus::Completed);
@@ -51,13 +48,10 @@ fn a_transfer_moves_the_money_and_completes() {
 fn a_refused_credit_gives_the_money_back() {
     bank()
         .when(&t1(), request(30))
-        .then(&t1(), [TransferEvent::from(requested(30)), failed(DestinationClosed)])
+        .then(&t1(), (requested(30), failed(DestinationClosed)))
         .then(
             &sam(),
-            [
-                AccountEvent::from(MoneyWithdrawn { amount: 30, balance_after: 70 }),
-                MoneyDeposited { amount: 30, balance_after: 100 }.into(),
-            ],
+            (MoneyWithdrawn { amount: 30, balance_after: 70 }, MoneyDeposited { amount: 30, balance_after: 100 }),
         )
         .then_none(&kim())
         .saga_status::<ExecuteTransfer>(&t1(), SagaStatus::Rejected(DestinationClosed.into()));
@@ -69,7 +63,7 @@ fn a_refused_debit_takes_nothing() {
     bank()
         .given(&kim(), [AccountOpened { owner: "kim".into() }])
         .when(&t1(), request(500))
-        .then(&t1(), [TransferEvent::from(requested(500)), failed(short.clone())])
+        .then(&t1(), (requested(500), failed(short.clone())))
         .then_none(&sam())
         .then_none(&kim())
         .saga_status::<ExecuteTransfer>(&t1(), SagaStatus::Rejected(short.into()));
@@ -81,10 +75,7 @@ fn only_the_owner_can_move_their_money() {
         .given(&kim(), [AccountOpened { owner: "kim".into() }])
         .acting_as(User("kim".into()))
         .when(&t1(), request(30))
-        .then(
-            &t1(),
-            [TransferEvent::from(TransferRequested { by: Some("kim".into()), ..requested(30) }), failed(NotOwner)],
-        )
+        .then(&t1(), (TransferRequested { by: Some("kim".into()), ..requested(30) }, failed(NotOwner)))
         .saga_status::<ExecuteTransfer>(&t1(), SagaStatus::Rejected(NotOwner.into()));
 }
 
@@ -93,13 +84,7 @@ fn the_ledger_records_every_movement_once() {
     let store = LedgerStore::default();
     Story::new()
         .projection(Ledger { store: store.clone() })
-        .given(
-            &sam(),
-            [
-                AccountEvent::from(AccountOpened { owner: "sam".into() }),
-                MoneyDeposited { amount: 100, balance_after: 100 }.into(),
-            ],
-        )
+        .given(&sam(), (AccountOpened { owner: "sam".into() }, MoneyDeposited { amount: 100, balance_after: 100 }))
         .when(&sam(), WithdrawMoney { amount: 40 })
         .then(&sam(), [MoneyWithdrawn { amount: 40, balance_after: 60 }]);
     let row = |kind, amount, balance_after| LedgerRow { account: sam(), kind, amount, balance_after };

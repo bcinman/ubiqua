@@ -6,8 +6,8 @@
 //! adapter wait until the story answers them.
 
 use domain::{
-    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles, Model,
-    Receipt, SendError, StreamId, Timestamp,
+    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles,
+    IntoEvents, Model, Receipt, SendError, StreamId, Timestamp,
 };
 use domain_memory::{Memory, Project, React, Run, SagaStatus, StubbedCall};
 use std::collections::HashMap;
@@ -76,11 +76,10 @@ impl Story {
     }
 
     /// History: events already recorded on `id`, written without deciding any command.
-    pub fn given<I, E>(mut self, id: &I, events: impl IntoIterator<Item = E>) -> Self
+    pub fn given<I>(mut self, id: &I, events: impl IntoEvents<EventOf<I>>) -> Self
     where
         I: AggregateId,
         AggregateOf<I>: Evolve,
-        E: Into<EventOf<I>>,
     {
         self.memory.append(id, events);
         self.catch_up();
@@ -169,17 +168,15 @@ pub struct When<C: Command> {
 
 impl<C: Command> When<C> {
     /// Checks the events recorded on `id` since the last check.
-    pub fn then<I, E>(mut self, id: &I, expected: impl IntoIterator<Item = E>) -> Self
+    pub fn then<I>(mut self, id: &I, expected: impl IntoEvents<EventOf<I>>) -> Self
     where
         I: AggregateId,
         AggregateOf<I>: Evolve,
-        E: Into<EventOf<I>>,
     {
         let stream = StreamId::of::<AggregateOf<I>>(id);
         let seen = self.story.seen.get(&stream).copied().unwrap_or(0) as usize;
         let recorded: Vec<_> = self.story.memory.events(id).into_iter().skip(seen).map(|e| e.event).collect();
-        let expected: Vec<EventOf<I>> = expected.into_iter().map(Into::into).collect();
-        assert_eq!(recorded, expected, "events recorded on {stream}");
+        assert_eq!(recorded, expected.into_events(), "events recorded on {stream}");
         self.story.seen.insert(stream, (seen + recorded.len()) as u64);
         self
     }
@@ -221,11 +218,10 @@ impl<C: Command> When<C> {
     }
 
     /// Checks every event a view has emitted for one key, oldest first.
-    pub fn emitted<V: Apply>(self, key: &V::Key, expected: impl IntoIterator<Item = impl Into<V::Event>>) -> Self {
+    pub fn emitted<V: Apply>(self, key: &V::Key, expected: impl IntoEvents<V::Event>) -> Self {
         let entries = self.story.memory.view::<V>().list(key, Cursor::START, usize::MAX);
         let actual: Vec<V::Event> = entries.into_iter().map(|entry| entry.event).collect();
-        let expected: Vec<V::Event> = expected.into_iter().map(Into::into).collect();
-        assert_eq!(actual, expected, "{} emitted for {key:?}", V::NAME);
+        assert_eq!(actual, expected.into_events(), "{} emitted for {key:?}", V::NAME);
         self
     }
 
@@ -272,11 +268,10 @@ impl<C: Command> When<C> {
     }
 
     /// Adds history, after checking this command was accounted for.
-    pub fn given<I, E>(mut self, id: &I, events: impl IntoIterator<Item = E>) -> Story
+    pub fn given<I>(mut self, id: &I, events: impl IntoEvents<EventOf<I>>) -> Story
     where
         I: AggregateId,
         AggregateOf<I>: Evolve,
-        E: Into<EventOf<I>>,
     {
         self.finish();
         std::mem::take(&mut self.story).given(id, events)

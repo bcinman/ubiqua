@@ -56,8 +56,8 @@ impl Acting<'_, Memory> {
 }
 
 use domain::{
-    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles, Keyed,
-    MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
+    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles,
+    IntoEvents, Keyed, MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
@@ -518,11 +518,10 @@ impl Memory {
     ///
     /// # Panics
     /// When the store fails.
-    pub fn append<I, E>(&self, id: &I, events: impl IntoIterator<Item = E>)
+    pub fn append<I>(&self, id: &I, events: impl IntoEvents<EventOf<I>>)
     where
         I: AggregateId,
         AggregateOf<I>: Evolve,
-        E: Into<EventOf<I>>,
     {
         let stream = StreamId::of::<AggregateOf<I>>(id);
         let at = (self.clock)();
@@ -532,8 +531,7 @@ impl Memory {
             self.load(id, &mut instance).unwrap_or_else(|e| panic!("{e}"));
             let mut state = instance.state.clone();
             let mut recorded = Vec::new();
-            for event in events {
-                let event = event.into();
+            for event in events.into_events() {
                 AggregateOf::<I>::evolve(&mut state, &event);
                 let seq = instance.events.len() as u64 + recorded.len() as u64 + 1;
                 recorded.push(Envelope { stream: stream.clone(), seq, at, command_id: None, event });

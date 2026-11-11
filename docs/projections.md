@@ -122,7 +122,7 @@ Give it a store you can read back:
 let store = LedgerStore::default();
 Story::new()
     .projection(Ledger { store: store.clone() })
-    .given(&sam(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+    .given(&sam(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
     .when(&sam(), WithdrawMoney { amount: 40 })
     .then(&sam(), [MoneyWithdrawn { amount: 40, balance_after: 60 }]);
 

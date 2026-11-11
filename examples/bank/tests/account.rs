@@ -31,7 +31,7 @@ fn an_unopened_account_refuses_deposits() {
 #[test]
 fn an_overdraft_is_rejected_with_the_evidence() {
     Story::new()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 50, balance_after: 50 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 50, balance_after: 50 }))
         .when(&a1(), WithdrawMoney { amount: 80 })
         .rejected(InsufficientFunds { balance: 50, requested: 80 });
 }
@@ -39,7 +39,7 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 #[test]
 fn each_withdrawal_is_decided_against_the_balance_the_last_one_left() {
     Story::new()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
         .when(&a1(), WithdrawMoney { amount: 80 })
         .then(&a1(), [MoneyWithdrawn { amount: 80, balance_after: 20 }])
         .when(&a1(), WithdrawMoney { amount: 80 })
@@ -70,7 +70,7 @@ fn an_owner_sees_every_account_they_hold() {
     let savings = AccountId::new("a-2");
     Story::new()
         .with::<Bank>()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 50, balance_after: 50 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 50, balance_after: 50 }))
         .given(&savings, [opened()])
         .when(&savings, DepositMoney { amount: 200 })
         .then(&savings, [MoneyDeposited { amount: 200, balance_after: 200 }])
@@ -85,7 +85,7 @@ fn a_risky_withdrawal_freezes_the_account_for_a_day() {
     let day = FREEZE_FOR;
     Story::new()
         .policy(FraudReview)
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
         .when(&a1(), WithdrawMoney { amount: 900 })
         .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
         .call(ScoreWithdrawal { account: a1(), amount: 900 })
@@ -103,7 +103,7 @@ fn a_risky_withdrawal_freezes_the_account_for_a_day() {
 fn small_withdrawals_are_not_scored() {
     Story::new()
         .policy(FraudReview)
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
         .when(&a1(), WithdrawMoney { amount: SCORED_FROM - 1 })
         .then(&a1(), [MoneyWithdrawn { amount: SCORED_FROM - 1, balance_after: 1001 - SCORED_FROM }])
         .advance(FREEZE_FOR)
@@ -113,7 +113,7 @@ fn small_withdrawals_are_not_scored() {
 #[test]
 fn only_the_owner_may_withdraw() {
     Story::new()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
         .acting_as(User("kim".into()))
         .when(&a1(), WithdrawMoney { amount: 10 })
         .rejected(NotOwner)

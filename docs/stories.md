@@ -8,7 +8,7 @@ use domain_story::Story;
 #[test]
 fn an_overdraft_is_rejected_with_the_evidence() {
     Story::new()
-        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 50, balance_after: 50 }.into()])
+        .given(&a1(), (opened(), MoneyDeposited { amount: 50, balance_after: 50 }))
         .when(&a1(), WithdrawMoney { amount: 80 })
         .rejected(InsufficientFunds { balance: 50, requested: 80 });
 }
@@ -18,9 +18,9 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 
 | Step | Checks |
 | --- | --- |
-| `.given(&id, [events])` | nothing; writes history without deciding |
+| `.given(&id, events)` | nothing; writes history without deciding |
 | `.when(&id, command)` | sends the command |
-| `.then(&id, [events])` | the events recorded on `id` since the last check |
+| `.then(&id, events)` | the events recorded on `id` since the last check |
 | `.then_none(&id)` | no events recorded on `id` |
 | `.rejected(r)` | the command was refused with exactly `r` |
 | `.replied(reply)` | the command's reply |
@@ -37,6 +37,8 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.external(system, adapter)` | answers calls with a real adapter instead |
 | `.acting_as(user)` | sends the commands after it as `user`; see [Who is asking](sessions.md) |
 
+Events go in an array, `[opened()]`, or a tuple when they're of different kinds, `(opened(), MoneyDeposited { .. })`.
+
 ## Success
 
 ```rust
@@ -51,7 +53,7 @@ Story::new()
 
 ```rust
 Story::new()
-    .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+    .given(&a1(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
     .when(&a1(), WithdrawMoney { amount: 80 })
     .then(&a1(), [MoneyWithdrawn { amount: 80, balance_after: 20 }])
     .when(&a1(), WithdrawMoney { amount: 80 })
@@ -93,7 +95,7 @@ A policy's commands show up as events on their own streams. Answer its calls in 
 ```rust
 Story::new()
     .policy(FraudReview)
-    .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+    .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
     .when(&a1(), WithdrawMoney { amount: 900 })
     .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
     .call(ScoreWithdrawal { account: a1(), amount: 900 })

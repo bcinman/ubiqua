@@ -85,7 +85,7 @@ A view without `rejects(..)` lets everyone read it.
 
 ```rust
 Story::new()
-    .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+    .given(&a1(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
     .acting_as(User("kim".into()))
     .when(&a1(), WithdrawMoney { amount: 10 })
     .rejected(NotOwner)

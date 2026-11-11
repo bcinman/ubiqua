@@ -212,7 +212,7 @@ On the web, call `run_due` from a timer.
 ```rust
 Story::new()
     .policy(FraudReview)
-    .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 1000, balance_after: 1000 }.into()])
+    .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
     .when(&a1(), WithdrawMoney { amount: 900 })
     .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }])
     .call(ScoreWithdrawal { account: a1(), amount: 900 })

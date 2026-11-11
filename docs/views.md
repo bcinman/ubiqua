@@ -136,7 +136,7 @@ Views chain as deep as you like. Hosting a view hosts the views it reads first, 
 
 ```rust
 #[derive(Model)]
-#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
+#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]   // and policies(..), sagas(..)
 pub struct Bank;
 
 let bank = Memory::new().with::<Bank>();

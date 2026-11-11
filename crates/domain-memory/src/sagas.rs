@@ -524,7 +524,12 @@ impl Memory {
             }
         }
         let host = Arc::new(SagaHost::<S> { runs: Mutex::new(runs) });
-        self.hosts.insert(TypeId::of::<S>(), Box::new(host.clone()));
+        let hosted = self.hosts.insert(TypeId::of::<S>(), Box::new(host.clone()));
+        assert!(
+            hosted.is_none(),
+            "{} is hosted twice: list it in the model's `sagas(..)` or add it with `saga`, not both",
+            S::NAME
+        );
         self.runners.push(host);
         self
     }
@@ -625,5 +630,12 @@ impl<S: Run> RunHost<S> {
     fn new(key: S::Key, key_json: String, record: Record) -> Self {
         let cell = Arc::new(Mutex::new(RunCell { record, used: HashSet::new(), suspend: None }));
         Self { key, key_json, cell, future: None, attempts: 0, retry_at: None, failure: None }
+    }
+}
+
+/// A saga in a model's `sagas(..)`.
+impl<S: Run> domain::HostSaga<S> for Memory {
+    fn host_saga(self) -> Self {
+        self.saga::<S>()
     }
 }

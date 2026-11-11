@@ -45,18 +45,13 @@ fn main() {
     }
 }
 
-/// The bank, with its fraud review asking a stand-in scorer, and transfers.
+/// The bank, with its fraud review asking a stand-in scorer.
 fn bank(db: Option<&str>) -> Memory {
     let memory = match db {
         Some(path) => Memory::new().persist_to(Sqlite::open(path).expect("open the database")),
         None => Memory::new(),
     };
-    memory
-        .with::<Bank>()
-        .policy(FraudReview)
-        .external(FraudCheck, RuleOfThumb)
-        .policy(TransferExecution)
-        .saga::<ExecuteTransfer>()
+    memory.with::<Bank>().external(FraudCheck, RuleOfThumb)
 }
 
 /// What a UI would do. It doesn't know whether the bank is in this process or on a server.

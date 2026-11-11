@@ -172,7 +172,7 @@ impl TempDb {
         db
     }
 
-    fn open<M: Model>(&self) -> Memory {
+    fn open<M: domain::Hosts<Memory>>(&self) -> Memory {
         Memory::new().persist_to(Sqlite::open(&self.0).unwrap()).with::<M>()
     }
 

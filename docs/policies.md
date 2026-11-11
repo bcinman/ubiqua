@@ -32,14 +32,24 @@ impl React for FraudReview {
 }
 ```
 
-Run it:
+List it in the model, and give its outside system an adapter:
 
 ```rust
-let bank = Memory::new()
-    .with::<Bank>()
-    .policy(FraudReview)
-    .external(FraudCheck, Vendor);
+#[derive(Model)]
+#[model(aggregates(Account), views(..), policies(FraudReview))]
+pub struct Bank;
+
+let bank = Memory::new().with::<Bank>().external(FraudCheck, Vendor);
 ```
+
+`with` builds each listed policy with `Default`. A policy that needs values, such as a client
+for another service, stays out of `policies(..)` and is added with `.policy(..)`:
+
+```rust
+let bank = Memory::new().with::<Bank>().policy(Notify { mailer });
+```
+
+Listing a policy and adding it too panics: it would run twice.
 
 ```text
 withdrew 900, balance 70
@@ -208,6 +218,9 @@ loop {
 On the web, call `run_due` from a timer.
 
 ## Test it
+
+A story runs only the policies it adds, even with `.with::<Bank>()`, so each story is about the
+rules it names:
 
 ```rust
 Story::new()

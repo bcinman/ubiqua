@@ -16,8 +16,8 @@ fn t1() -> TransferId {
 
 fn bank() -> Story {
     Story::new()
+        .with::<Bank>()
         .policy(TransferExecution)
-        .saga::<ExecuteTransfer>()
         .given(&sam(), (AccountOpened { owner: "sam".into() }, MoneyDeposited { amount: 100, balance_after: 100 }))
 }
 

@@ -287,7 +287,8 @@ pub fn derive_view(input: TokenStream) -> TokenStream {
     view(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// `#[model(aggregates(..), views(..))]`: `impl Model`, registering each part.
+/// `#[model(aggregates(..), views(..), policies(..), sagas(..))]`: `impl Model`, registering each
+/// aggregate and view, and `impl Hosts`, handing a host each policy and saga.
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -789,14 +790,18 @@ fn pick_input(source: &Path, list: &[Path], input_enum: &Ident) -> Tokens {
 
 fn model(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
-    let (mut aggregates, mut views) = (Vec::new(), Vec::new());
+    let (mut aggregates, mut views, mut policies, mut sagas) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     parse_attr(input, "model", |meta| {
         if meta.path.is_ident("aggregates") {
             aggregates = paths(&meta)?;
         } else if meta.path.is_ident("views") {
             views = paths(&meta)?;
+        } else if meta.path.is_ident("policies") {
+            policies = paths(&meta)?;
+        } else if meta.path.is_ident("sagas") {
+            sagas = paths(&meta)?;
         } else {
-            return Err(meta.error("expected `aggregates` or `views`"));
+            return Err(meta.error("expected `aggregates`, `views`, `policies` or `sagas`"));
         }
         Ok(())
     })?;
@@ -808,6 +813,18 @@ fn model(input: &DeriveInput) -> syn::Result<Tokens> {
             fn register<__R: ::domain::Registry>(registry: &mut __R) {
                 #( registry.aggregate::<#aggregates>(); )*
                 #( registry.view::<#views>(); )*
+            }
+        }
+
+        impl<__H> ::domain::Hosts<__H> for #name
+        where
+            #( __H: ::domain::HostPolicy<#policies>, )*
+            #( __H: ::domain::HostSaga<#sagas>, )*
+        {
+            fn host(host: __H) -> __H {
+                #( let host = ::domain::HostPolicy::<#policies>::host_policy(host); )*
+                #( let host = ::domain::HostSaga::<#sagas>::host_saga(host); )*
+                host
             }
         }
     })

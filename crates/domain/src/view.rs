@@ -298,6 +298,31 @@ pub trait Model: 'static {
     fn register<R: Registry>(registry: &mut R);
 }
 
+/// A model's `policies(..)` and `sagas(..)`, for a host `H` that runs each of them.
+/// `#[derive(Model)]` implements it; a host bounds on it to run them with the model.
+pub trait Hosts<H>: Model {
+    /// Hands `host` each policy and saga the model lists.
+    fn host(host: H) -> H;
+}
+
+/// A host that can run the policy `P` from a model's `policies(..)`, building it itself.
+#[diagnostic::on_unimplemented(
+    message = "the model's `policies(..)` lists `{P}`, which this host can't build",
+    label = "a listed policy implements the host's handler trait and `Default`; add one that needs values with `.policy(..)` instead"
+)]
+pub trait HostPolicy<P: crate::Policy>: Sized {
+    fn host_policy(self) -> Self;
+}
+
+/// A host that can run the saga `S` from a model's `sagas(..)`.
+#[diagnostic::on_unimplemented(
+    message = "the model's `sagas(..)` lists `{S}`, which this host can't run",
+    label = "implement the host's handler trait for `{S}`"
+)]
+pub trait HostSaga<S: crate::Saga>: Sized {
+    fn host_saga(self) -> Self;
+}
+
 /// Receives a model's parts. Hosts implement it.
 pub trait Registry {
     fn aggregate<A: Evolve>(&mut self);

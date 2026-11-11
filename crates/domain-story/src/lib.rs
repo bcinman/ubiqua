@@ -7,7 +7,7 @@
 
 use domain::{
     Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles,
-    IntoEvents, Model, Receipt, SendError, StreamId, Timestamp,
+    HostPolicy, HostSaga, Hosts, IntoEvents, Model, Receipt, SendError, StreamId, Timestamp,
 };
 use domain_memory::{Memory, Project, React, Run, SagaStatus, StubbedCall};
 use std::collections::HashMap;
@@ -35,6 +35,22 @@ impl Default for Story {
     }
 }
 
+/// Hosts a model's sagas but not its policies, for [`Story::with`].
+#[doc(hidden)]
+pub struct Sagas(Memory);
+
+impl<P: domain::Policy> HostPolicy<P> for Sagas {
+    fn host_policy(self) -> Self {
+        self
+    }
+}
+
+impl<S: Run> HostSaga<S> for Sagas {
+    fn host_saga(self) -> Self {
+        Sagas(self.0.saga::<S>())
+    }
+}
+
 impl Story {
     /// An empty history, with the clock at the Unix epoch.
     pub fn new() -> Self {
@@ -44,9 +60,10 @@ impl Story {
         Self { memory: Arc::new(memory), clock, seen: HashMap::new(), actor: None }
     }
 
-    /// Runs the model's views too, so `view` and `emitted` can check them.
-    pub fn with<M: Model>(self) -> Self {
-        self.build(Memory::with::<M>)
+    /// Runs the model's views and sagas too, so `view` and `emitted` can check them. Its policies
+    /// don't run: add each one a story is about with [`policy`](Self::policy).
+    pub fn with<M: Model + Hosts<Sagas>>(self) -> Self {
+        self.build(|memory| M::host(Sagas(memory.with_views::<M>())).0)
     }
 
     /// Runs a policy after every step. Its commands' events must be checked like any others.

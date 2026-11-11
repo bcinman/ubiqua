@@ -26,9 +26,14 @@ domain::id!(
     pub struct TransferId;
 );
 
-/// Everything that runs together.
+/// Everything that runs together. The fraud review also needs a `FraudCheck` adapter.
 #[derive(domain::Model)]
-#[model(aggregates(Account, Transfer), views(AccountSummary, OwnerHoldings, Statement))]
+#[model(
+    aggregates(Account, Transfer),
+    views(AccountSummary, OwnerHoldings, Statement),
+    policies(FraudReview, TransferExecution),
+    sagas(ExecuteTransfer)
+)]
 pub struct Bank;
 
 /// What an app may do with a bank.

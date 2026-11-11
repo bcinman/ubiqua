@@ -41,8 +41,9 @@ pub use policy::{Policy, PolicySources, Reacts};
 pub use projection::{Projection, Saga, WidenRejection};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
-    Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Keyed, Member, Model, NotCaughtUp, Origin, Position,
-    Predict, Predictions, Registry, Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
+    Apply, Consumes, Cursor, Entry, Frame, HostPolicy, HostSaga, Hosts, KeyFrom, KeyOf, Keyed, Member, Model,
+    NotCaughtUp, Origin, Position, Predict, Predictions, Registry, Snapshot, Source, SourcePayload, Sources, Validate,
+    View, ViewCx,
 };
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.

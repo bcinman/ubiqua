@@ -66,14 +66,17 @@ impl React for TransferExecution {
 }
 ```
 
-Run both:
+List both in the model:
 
 ```rust
-let bank = Memory::new()
-    .with::<Bank>()
-    .policy(TransferExecution)
-    .saga::<ExecuteTransfer>();
+#[derive(Model)]
+#[model(aggregates(Account, Transfer), policies(TransferExecution), sagas(ExecuteTransfer))]
+pub struct Bank;
+
+let bank = Memory::new().with::<Bank>();
 ```
+
+Without a model, `.saga::<ExecuteTransfer>()` hosts one.
 
 ## Declare one
 
@@ -172,8 +175,8 @@ With [SQLite](storage.md), unfinished runs carry on after a restart.
 
 ```rust
 Story::new()
+    .with::<Bank>()                       // hosts the model's sagas, but runs no policy
     .policy(TransferExecution)
-    .saga::<ExecuteTransfer>()
     .given(&sam(), (opened(), MoneyDeposited { amount: 100, balance_after: 100 }))
     .when(&t1(), RequestTransfer { from: sam(), to: kim(), amount: 30 })       // kim has no account
     .then(&t1(), (requested(30), failed(DestinationClosed)))

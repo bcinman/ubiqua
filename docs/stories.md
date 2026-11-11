@@ -28,6 +28,7 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.advance(duration)` | moves the clock forward, firing what's due |
 | `.view::<V>(&key, state)` | a view's state for one key |
 | `.emitted::<V>(&key, [events])` | every event a view emitted for one key |
+| `.with::<M>()` | runs the model's views and sagas, but none of its policies |
 | `.policy(p)` | runs a policy |
 | `.projection(p)` | runs a [projection](projections.md); read its store after |
 | `.saga::<S>()` | runs a [saga](sagas.md)'s runs; one that dies fails the story |
@@ -64,7 +65,7 @@ Story::new()
 
 ```rust
 Story::new()
-    .with::<Bank>()                                  // run the model's views
+    .with::<Bank>()                                  // run the model's views, not its policies
     .given(&a1(), [opened()])
     .when(&a1(), DepositMoney { amount: 100 })
     .then(&a1(), [MoneyDeposited { amount: 100, balance_after: 100 }])

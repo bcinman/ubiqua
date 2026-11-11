@@ -120,7 +120,7 @@ See [Keep it on disk](storage.md).
 ## Policies and schedules
 
 ```rust
-let bank = Arc::new(Memory::new().with::<Bank>().policy(FraudReview).external(FraudCheck, Vendor));
+let bank = Arc::new(Memory::new().with::<Bank>().external(FraudCheck, Vendor));   // Bank lists FraudReview
 let next = bank.run_due();        // runs what's due; Some(when) to call it again
 ```
 

@@ -29,7 +29,7 @@ pub struct Risk(pub u8);
 #[external_system(calls(ScoreWithdrawal))]
 pub struct FraudCheck;
 
-#[derive(Policy)]
+#[derive(Policy, Default)]
 #[policy(from(Account(MoneyWithdrawn)))]
 pub struct FraudReview;
 

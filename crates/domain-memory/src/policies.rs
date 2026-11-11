@@ -334,6 +334,11 @@ impl Memory {
     /// # Panics
     /// When the store fails.
     pub fn policy<P: React>(mut self, policy: P) -> Self {
+        assert!(
+            self.hosts.insert(TypeId::of::<P>(), Box::new(())).is_none(),
+            "{} is hosted twice: list it in the model's `policies(..)` or add it with `policy`, not both",
+            P::NAME
+        );
         P::sources(&mut HostSources {
             registrar: &mut Registrar { memory: &mut self, hosting: Default::default(), rebuilt: Default::default() },
         });
@@ -447,5 +452,12 @@ impl<P: Policy> Acting<'_, PolicyCx<P>> {
         AggregateOf<C::Target>: Handles<C>,
     {
         self.host.memory().send_as(Some(&self.actor), id, command, self.host.next_command_id())
+    }
+}
+
+/// A policy in a model's `policies(..)`, built with `Default`.
+impl<P: React + Default> domain::HostPolicy<P> for Memory {
+    fn host_policy(self) -> Self {
+        self.policy(P::default())
     }
 }

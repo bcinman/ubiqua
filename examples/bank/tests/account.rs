@@ -66,6 +66,16 @@ fn the_summary_and_statement_follow_the_account() {
 }
 
 #[test]
+fn a_story_with_the_model_runs_only_the_policies_it_adds() {
+    // The fraud review is in the model; without `.policy(FraudReview)` it doesn't score this.
+    Story::new()
+        .with::<Bank>()
+        .given(&a1(), (opened(), MoneyDeposited { amount: 1000, balance_after: 1000 }))
+        .when(&a1(), WithdrawMoney { amount: 900 })
+        .then(&a1(), [MoneyWithdrawn { amount: 900, balance_after: 100 }]);
+}
+
+#[test]
 fn an_owner_sees_every_account_they_hold() {
     let savings = AccountId::new("a-2");
     Story::new()

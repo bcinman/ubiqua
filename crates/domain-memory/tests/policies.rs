@@ -48,8 +48,12 @@ impl Decide<Ping> for Counter {
 #[model(aggregates(Counter))]
 pub struct Counting;
 
+#[derive(Model)]
+#[model(aggregates(Counter), policies(Echo))]
+pub struct Echoing;
+
 /// Pings, then fails while `failures` is above zero.
-#[derive(Policy)]
+#[derive(Policy, Default)]
 #[policy(from(Counter(Bumped)))]
 pub struct Echo {
     failures: AtomicU32,
@@ -262,4 +266,18 @@ fn a_command_carries_who_sent_it() {
     assert_eq!(signers("s-2"), [None]);
     assert_eq!(signers("s-1-copy"), [Some("clerk".to_string())]);
     assert_eq!(signers("s-1-copy-copy"), Vec::<Option<String>>::new());
+}
+
+#[test]
+fn a_model_hosts_the_policies_it_lists() {
+    let memory = Arc::new(Memory::new().with::<Echoing>());
+    memory.send(&CounterId::new("c"), Bump).unwrap();
+    memory.run_due();
+    assert_eq!(memory.events(&CounterId::new("c-echo")).len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Echo is hosted twice")]
+fn a_listed_policy_cant_be_added_again() {
+    let _ = Memory::new().with::<Echoing>().policy(Echo::default());
 }

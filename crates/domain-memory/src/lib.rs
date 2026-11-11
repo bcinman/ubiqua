@@ -56,7 +56,7 @@ impl Acting<'_, Memory> {
 }
 
 use domain::{
-    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles,
+    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles, Hosts,
     IntoEvents, Keyed, MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
@@ -97,7 +97,7 @@ pub struct Memory {
     histories: HashMap<TypeId, HistoryFn>,
     /// Policies, projections and saga runs: what `run_due` runs.
     runners: Vec<Arc<dyn policies::PolicyRun>>,
-    /// Each projection's and saga's host, by its `TypeId`.
+    /// Each projection's and saga's host, by its `TypeId`; `()` for each policy.
     hosts: HashMap<TypeId, AnyBox>,
     /// Scheduled commands, by stream and command id.
     schedules: Mutex<HashMap<(String, String), ScheduleRow>>,
@@ -237,13 +237,20 @@ impl Memory {
         self
     }
 
-    /// Hosts the model's views. A view added when events already exist receives them first, in
-    /// the order they were recorded.
+    /// Hosts the model: its views, its sagas, and each of its policies, built with `Default`. Add
+    /// a policy that needs values with [`policy`](Self::policy) instead of listing it.
     ///
-    /// With a store, a view stored at its current [`View::VERSION`](domain::View::VERSION) loads
-    /// and applies only what it missed. Otherwise it's rebuilt from the events, and so is every
-    /// view that reads it.
-    pub fn with<M: Model>(mut self) -> Self {
+    /// A view added when events already exist receives them first, in the order they were
+    /// recorded. With a store, a view stored at its current
+    /// [`View::VERSION`](domain::View::VERSION) loads and applies only what it missed. Otherwise
+    /// it's rebuilt from the events, and so is every view that reads it.
+    pub fn with<M: Hosts<Memory>>(self) -> Self {
+        M::host(self.with_views::<M>())
+    }
+
+    /// For hosts: [`with`](Self::with) without the model's policies and sagas.
+    #[doc(hidden)]
+    pub fn with_views<M: Model>(mut self) -> Self {
         M::register(&mut Registrar { memory: &mut self, hosting: HashSet::new(), rebuilt: HashSet::new() });
         self
     }

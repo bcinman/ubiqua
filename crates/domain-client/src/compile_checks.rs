@@ -59,3 +59,27 @@
 //!
 //! domain_memory::Memory::new().external(Locks, HalfLocks); // `HalfLocks` doesn't answer `Unlock`
 //! ```
+//!
+//! A model lists a policy that needs values, so `Memory::with` can't build it:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[domain::event] pub struct Closed;
+//! # #[domain::command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } }
+//! #[derive(Policy)]
+//! #[policy(from(Door(Closed)))]
+//! pub struct Alarm { pub siren: String }       // no Default
+//!
+//! # impl domain_memory::React for Alarm {
+//! #     async fn react(&self, _: &domain_memory::PolicyCx<Self>, _: AlarmInput) -> Result<(), domain_memory::PolicyError> { Ok(()) }
+//! # }
+//! #[derive(Model)]
+//! #[model(aggregates(Door), policies(Alarm))]
+//! pub struct House;
+//!
+//! domain_memory::Memory::new().with::<House>(); // `Alarm: Default` is not satisfied
+//! ```

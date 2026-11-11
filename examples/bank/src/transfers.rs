@@ -94,7 +94,7 @@ impl Decide<FailTransfer> for Transfer {
 }
 
 /// Starts a transfer's saga once it's requested. Nobody waits for it.
-#[derive(Policy)]
+#[derive(Policy, Default)]
 #[policy(from(Transfer(TransferRequested)))]
 pub struct TransferExecution;
 

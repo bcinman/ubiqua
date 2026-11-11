@@ -83,8 +83,7 @@ client.unsent().latest().0                                     // 0
 ```
 
 ```rust
-let unsent = client.unsent();                                  // LiveView<usize>
-let _badge = unsent.on_change(|n, _| show_sync_badge(**n));
+let _badge = client.unsent().on_change(|n, _| show_sync_badge(**n));    // a LiveView<usize>
 ```
 
 | | While offline |

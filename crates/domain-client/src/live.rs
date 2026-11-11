@@ -23,7 +23,8 @@ pub(crate) type KeepAlive = Arc<dyn Any>;
 /// - push: [`on_change`](Self::on_change) callbacks;
 /// - async: [`changed`](Self::changed)`.await` on any executor.
 ///
-/// Fast changes coalesce: it holds the latest value only. Dropping every clone stops the updates.
+/// Fast changes coalesce: it holds the latest value only. Dropping every clone and every
+/// [`Listener`] stops the updates.
 pub struct LiveView<T> {
     shared: Arc<Shared<T>>,
     /// Whatever feeds it, kept running while the view is held.
@@ -61,13 +62,14 @@ impl<T: MaybeSend + MaybeSync + 'static> LiveView<T> {
     }
 
     /// Calls `f` with each new value. It runs on the thread that made the change, usually the
-    /// domain's, so it should only schedule work on the UI thread. Stops when the `Listener` drops.
+    /// domain's, so it should only schedule work on the UI thread. The `Listener` keeps the view
+    /// running, so hold it alone; the calls stop when it drops.
     pub fn on_change(&self, f: impl Fn(&Arc<T>, u64) + MaybeSend + MaybeSync + 'static) -> Listener<T> {
         let mut inner = lock(&self.shared.inner);
         inner.next_listener += 1;
         let id = inner.next_listener;
         inner.callbacks.push((id, Arc::new(f)));
-        Listener { shared: self.shared.clone(), id }
+        Listener { shared: self.shared.clone(), id, _source: self._source.clone() }
     }
 
     /// Resolves with the value once its version is past `seen`.
@@ -108,10 +110,13 @@ impl<T: PartialEq> Shared<T> {
     }
 }
 
-/// An [`on_change`](LiveView::on_change) callback. Dropping it unsubscribes.
+/// An [`on_change`](LiveView::on_change) callback. It keeps its live view running; dropping it
+/// unsubscribes.
 pub struct Listener<T> {
     shared: Arc<Shared<T>>,
     id: u64,
+    /// What feeds the live view, kept running while the listener is held.
+    _source: KeepAlive,
 }
 
 impl<T> Drop for Listener<T> {

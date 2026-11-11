@@ -5,8 +5,7 @@ An app talks to its model through a `Client`. It sends commands, reads views, an
 ```rust
 let client = Client::<BankApi>::in_process(Runtime::spawn(|| Memory::new().with::<Bank>()));
 
-let summary = client.view::<AccountSummary>().live(&sam);
-let _redraw = summary.on_change(|summary, _| redraw(summary));
+let _redraw = client.view::<AccountSummary>().live(&sam).on_change(|summary, _| redraw(summary));
 
 client.send(&sam, DepositMoney { amount: 100 });
 ```
@@ -147,7 +146,7 @@ let (latest, version) = summary.changed(version).await;
 
 `version` counts changes. It lets you skip work when nothing changed, or wait for the change after one you've seen. Over a connection, version 0 is `Ok(None)` until the server's first answer.
 
-Dropping every clone of a `LiveView` stops its updates.
+A listener keeps its live view running, so a UI that only wants the callbacks holds the listener alone. Dropping every clone of a `LiveView` and every listener stops its updates.
 
 ## With a UI framework
 

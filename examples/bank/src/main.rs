@@ -9,7 +9,7 @@
 
 use bank::*;
 use domain::{Answer, Answered, Cursor};
-use domain_client::{Client, Listener, LiveView, Pending, Read};
+use domain_client::{Client, Listener, Pending, Read};
 use domain_memory::{Memory, Runtime};
 use domain_server::Server;
 use domain_sqlite::Sqlite;
@@ -30,7 +30,7 @@ fn main() {
         }
         ["join", url, name] => {
             let client = Client::<BankApi>::connect(url, Some(name));
-            let _summary = app(&client, name);
+            let _redraw = app(&client, name);
             println!("watching; press Ctrl-C to stop");
             loop {
                 std::thread::park();
@@ -56,13 +56,15 @@ fn bank(db: Option<&str>) -> Memory {
 }
 
 /// What a UI would do. It doesn't know whether the bank is in this process or on a server.
-/// Returns the summary it keeps redrawing, for as long as it's held.
-fn app(client: &Client<BankApi>, me: &str) -> (LiveView<Read<AccountSummary>>, Listener<Read<AccountSummary>>) {
+/// Returns what redraws the summary, which keeps redrawing for as long as it's held.
+fn app(client: &Client<BankApi>, me: &str) -> Listener<Read<AccountSummary>> {
     let account = AccountId::new(format!("{me}-main"));
 
     // Redraw whenever the summary changes.
-    let summary = client.view::<AccountSummary>().live(&account);
-    let redraw = summary.on_change(|summary, version| println!("redraw #{version}: {summary:?}"));
+    let redraw = client
+        .view::<AccountSummary>()
+        .live(&account)
+        .on_change(|summary, version| println!("redraw #{version}: {summary:?}"));
     let statement = client.view::<Statement>();
     let seen = next_frame(statement.snapshot(&account)).map_or(Cursor::START, |s| s.cursor);
 
@@ -90,7 +92,7 @@ fn app(client: &Client<BankApi>, me: &str) -> (LiveView<Read<AccountSummary>>, L
     for line in next_frame(statement.list(&account, seen, 10)).unwrap_or_default() {
         println!("statement #{}: {:?}", line.cursor.seq(), line.event);
     }
-    (summary, redraw)
+    redraw
 }
 
 /// The frame loop checks what it's waiting on, once per frame.

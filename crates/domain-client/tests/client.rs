@@ -296,16 +296,15 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
 }
 
 #[test]
-fn dropping_a_live_view_stops_its_updates() {
+fn a_listener_keeps_its_live_view_running() {
     let client = Client::<CountingApi>::in_process(runtime());
-    let live = client.view::<Total>().live(&c("a"));
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
-    let listener = live.on_change(move |_, _| flag.store(true, Ordering::SeqCst));
-    drop(live);
+    let _listener = client.view::<Total>().live(&c("a")).on_change(move |_, _| flag.store(true, Ordering::SeqCst));
+    settled(&client);
+    called.store(false, Ordering::SeqCst);
     block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
-    assert!(!called.load(Ordering::SeqCst), "the live view was dropped, so nothing feeds it");
-    drop(listener);
+    assert!(called.load(Ordering::SeqCst), "the listener alone keeps the live view fed");
 }
 
 /// Polls again only when woken, so a missing wake fails instead of being re-polled.

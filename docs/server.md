@@ -68,8 +68,7 @@ The client reconnects by itself, waiting 0.1s, then 0.2s, up to 5s between tries
 | `events` | picks up after the last entry it had, then sends `CaughtUp` again |
 
 ```rust
-let connection = client.connection();          // LiveView<Connection>
-let _banner = connection.on_change(|c, _| show_offline_banner(!matches!(**c, Connection::Connected)));
+let _banner = client.connection().on_change(|c, _| show_offline_banner(!matches!(**c, Connection::Connected)));
 ```
 
 ```text

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tls::{Input, Output};
 
@@ -154,7 +154,8 @@ pub fn connect_with(
     };
     let (host, path) = rest.split_once('/').map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
     let addr = if host.contains(':') { host.to_string() } else { format!("{host}:{}", if secure { 443 } else { 80 }) };
-    let mut stream = TcpStream::connect(addr.to_socket_addrs()?.next().ok_or_else(|| invalid("no address"))?)?;
+    // Tries each address the host resolves to, such as ::1 then 127.0.0.1 for localhost.
+    let mut stream = TcpStream::connect(addr.as_str())?;
     stream.set_nodelay(true)?;
     let session = if secure {
         let tls = match tls {

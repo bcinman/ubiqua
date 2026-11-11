@@ -10,13 +10,28 @@ Everything else stays the same. On the next run, the bank carries on where it st
 
 ```text
 $ cargo run -p bank -- bank.db
-withdraw 500: rejected: InsufficientFunds { balance: 70, requested: 500 }
+..
+withdraw 10: rejected: Frozen
+statement #1: StatementLine(StatementLine { kind: Deposit, amount: 1000, balance: 1000 })
+statement #2: StatementLine(StatementLine { kind: Withdrawal, amount: 30, balance: 970 })
+statement #3: StatementLine(StatementLine { kind: Withdrawal, amount: 50, balance: 920 })
+statement #4: StatementLine(StatementLine { kind: Withdrawal, amount: 900, balance: 20 })
 $ cargo run -p bank -- bank.db
-showing: Some(Summary { owner: Some("sam"), balance: 70 })
-redraw #1: Some(Summary { owner: Some("sam"), balance: 170 })
-redraw #2: Some(Summary { owner: Some("sam"), balance: 140 })
-withdraw 500: rejected: InsufficientFunds { balance: 140, requested: 500 }
+redraw #1: Ok(Some(Summary { owner: Some("sam"), balance: 20 }))
+redraw #2: Ok(Some(Summary { owner: Some("sam"), balance: 1020 }))
+redraw #3: Ok(Some(Summary { owner: Some("sam"), balance: 990 }))
+redraw #4: Ok(Some(Summary { owner: Some("sam"), balance: 1020 }))
+transfer: rejected: AlreadyRequested
+redraw #5: Ok(Some(Summary { owner: Some("sam"), balance: 120 }))
+redraw #6: Ok(Some(Summary { owner: Some("sam"), balance: 1020 }))
+withdraw 900: rejected: Frozen
+redraw #7: Ok(Some(Summary { owner: Some("sam"), balance: 1010 }))
+redraw #8: Ok(Some(Summary { owner: Some("sam"), balance: 1020 }))
+withdraw 10: rejected: Frozen
+statement #5: StatementLine(StatementLine { kind: Deposit, amount: 1000, balance: 1020 })
 ```
+
+The second run finds the account still frozen and the transfer already requested. Only its deposit lands, as statement line #5; each withdrawal shows [as predicted](offline.md) and then reverts when it's refused.
 
 ## What's stored
 

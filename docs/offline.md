@@ -61,9 +61,9 @@ client.send(&sam, DepositMoney { amount: 100 });            // balance 170, befo
 | it was refused | drops the prediction: back to the server's state |
 
 ```text
-redraw #3: Ok(Some(Summary { .., balance: 20 }))
-redraw #4: Ok(Some(Summary { .., balance: 10 }))      withdraw 10, predicted
-redraw #5: Ok(Some(Summary { .., balance: 20 }))      rejected: Frozen
+redraw #4: Ok(Some(Summary { .., balance: 20 }))
+redraw #5: Ok(Some(Summary { .., balance: 10 }))      withdraw 10, predicted
+redraw #6: Ok(Some(Summary { .., balance: 20 }))      rejected: Frozen
 ```
 
 A change never shows twice. While a command waits, the view holds back newer states from the server, and when the answer arrives it shows them in one step.

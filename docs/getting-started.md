@@ -111,16 +111,21 @@ println!("balance {}", receipt.reply.balance);
 
 ```text
 $ cargo run -p bank
-showing: None
-redraw #1: Some(Summary { owner: Some("sam"), balance: 0 })
-redraw #2: Some(Summary { owner: Some("sam"), balance: 100 })
-redraw #3: Some(Summary { owner: Some("sam"), balance: 70 })
-withdraw 500: rejected: InsufficientFunds { balance: 70, requested: 500 }
-statement #1: StatementLine(StatementLine { kind: Deposit, amount: 100, balance: 100 })
-statement #2: StatementLine(StatementLine { kind: Withdrawal, amount: 30, balance: 70 })
+redraw #1: Ok(None)
+redraw #2: Ok(Some(Summary { owner: Some("sam"), balance: 970 }))
+redraw #3: Ok(Some(Summary { owner: Some("sam"), balance: 920 }))
+redraw #4: Ok(Some(Summary { owner: Some("sam"), balance: 20 }))
+withdrew 900, balance 20
+redraw #5: Ok(Some(Summary { owner: Some("sam"), balance: 10 }))
+redraw #6: Ok(Some(Summary { owner: Some("sam"), balance: 20 }))
+withdraw 10: rejected: Frozen
+statement #1: StatementLine(StatementLine { kind: Deposit, amount: 1000, balance: 1000 })
+statement #2: StatementLine(StatementLine { kind: Withdrawal, amount: 30, balance: 970 })
+statement #3: StatementLine(StatementLine { kind: Withdrawal, amount: 50, balance: 920 })
+statement #4: StatementLine(StatementLine { kind: Withdrawal, amount: 900, balance: 20 })
 ```
 
-The example sends through a [client](client.md), as an app would. `cargo run -p bank -- bank.db` [keeps it on disk](storage.md).
+The example sends through a [client](client.md), as an app would. It also moves 50 to savings with a [saga](sagas.md), and its [fraud policy](policies.md) freezes the account after the withdrawal of 900, so the next one is refused. `cargo run -p bank -- bank.db` [keeps it on disk](storage.md).
 
 ## 6. Add a view
 

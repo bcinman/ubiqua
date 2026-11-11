@@ -388,8 +388,8 @@ impl<V: Apply + Validate> ClientView<V> {
     /// The key's state, once the view has applied `position`, such as a command's receipt.
     pub fn get_at_least(&self, key: &V::Key, position: impl Into<Position>) -> Pending<Read<V>> {
         match &self.inner {
-            ViewInner::Local { reader, actor } => Pending::ready(match reader.at_least(position) {
-                Ok(reader) => checked::<V>(actor, key, reader.get(key)),
+            ViewInner::Local { reader, actor } => Pending::ready(match reader.get_at_least(key, position) {
+                Ok(state) => checked::<V>(actor, key, state),
                 Err(e) => Err(ReadError::NotCaughtUp(e)),
             }),
             #[cfg(not(target_arch = "wasm32"))]

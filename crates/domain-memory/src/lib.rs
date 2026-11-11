@@ -21,11 +21,11 @@ pub use policies::{PolicyCx, PolicyError, React};
 pub use projections::{Project, ProjectionError, ProjectionInput};
 pub use sagas::{Run, SagaCx, SagaStatus, Settle, Signal, SignalError, Step};
 pub use schedules::{ScheduleError, UnscheduleError};
+use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
 pub use store::{Store, StoreError};
 pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
 #[doc(hidden)]
 pub use views::{Publisher, channel};
-use store::{Commit, EventRow, ReceiptRow, ScheduleRow};
 
 /// What a model's policies, projections and sagas use: `use domain_memory::prelude::*;`.
 pub mod prelude {

@@ -415,7 +415,9 @@ impl<V: Apply> ViewReader<V> {
         })
     }
 
-    /// The key's state now, then again each time it changes.
+    /// For hosts: the key's state now, then again each time it changes. Apps use a client's
+    /// `live`, which this backs.
+    #[doc(hidden)]
     pub fn watch(&self, key: &V::Key) -> Watch<V> {
         self.host.read(|data| {
             let k = data.keys.entry(key.clone()).or_default();
@@ -426,14 +428,17 @@ impl<V: Apply> ViewReader<V> {
         })
     }
 
-    /// Checks the view has applied `position`, such as a command's receipt, so a read sees that
-    /// command. Counts what it reads through other views. Fails when it hasn't applied it, or when
-    /// the stream doesn't reach this view.
-    pub fn at_least(&self, position: impl Into<Position>) -> Result<&Self, NotCaughtUp> {
+    /// The key's state, once the view has applied `position`, such as a command's receipt, so
+    /// the read sees that command. Counts what it reads through other views. Fails when it hasn't
+    /// applied it, or when the stream doesn't reach this view.
+    pub fn get_at_least(&self, key: &V::Key, position: impl Into<Position>) -> Result<Option<V::State>, NotCaughtUp> {
         let Position { stream, version } = position.into();
         self.host.catch_up();
         let applied = self.host.applied(&stream).unwrap_or(0);
-        if applied >= version { Ok(self) } else { Err(NotCaughtUp { view: V::NAME, stream, wanted: version, applied }) }
+        if applied < version {
+            return Err(NotCaughtUp { view: V::NAME, stream, wanted: version, applied });
+        }
+        Ok(self.get(key))
     }
 }
 

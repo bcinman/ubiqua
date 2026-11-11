@@ -281,17 +281,19 @@ fn get<V: Apply + Validate>(memory: &Memory, actor: Option<&CurrentActor>, key: 
     let read = || -> Result<Body, Body> {
         let key = decode::<V::Key>(key).map_err(invalid::<V>)?;
         let reader = memory.view::<V>();
-        if let Some(At { stream, version }) = at_least {
-            reader.at_least(Position { stream: StreamId::from(stream), version }).map_err(|e| {
-                Body::Err(Failure::NotCaughtUp {
-                    view: e.view.into(),
-                    stream: e.stream.to_string(),
-                    wanted: e.wanted,
-                    applied: e.applied,
-                })
-            })?;
-        }
-        let state = reader.get(&key);
+        let state = match at_least {
+            Some(At { stream, version }) => {
+                reader.get_at_least(&key, Position { stream: StreamId::from(stream), version }).map_err(|e| {
+                    Body::Err(Failure::NotCaughtUp {
+                        view: e.view.into(),
+                        stream: e.stream.to_string(),
+                        wanted: e.wanted,
+                        applied: e.applied,
+                    })
+                })?
+            }
+            None => reader.get(&key),
+        };
         validate::<V>(actor, &key, state.as_ref())?;
         Ok(encode(&state).map_or_else(unavailable, Body::Ok))
     };

@@ -253,7 +253,7 @@ fn reading_your_own_write_counts_what_arrives_through_other_views() {
     let receipt = memory.send(&a("s1"), Move { amount: 9 }).unwrap();
 
     let board = memory.view::<Leaderboard>();
-    assert_eq!(board.at_least(&receipt).unwrap().get(&everyone()), Some(totals(&[("sam", 9)])));
+    assert_eq!(board.get_at_least(&everyone(), &receipt).unwrap(), Some(totals(&[("sam", 9)])));
 }
 
 #[test]

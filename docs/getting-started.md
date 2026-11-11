@@ -148,7 +148,7 @@ pub struct Bank;
 ```rust
 let bank = Memory::new().with::<Bank>();
 let receipt = bank.send(&sam, WithdrawMoney { amount: 30 }).unwrap();
-let summary = bank.view::<AccountSummary>().at_least(&receipt).unwrap().get(&sam);
+let summary = bank.view::<AccountSummary>().get_at_least(&sam, &receipt).unwrap();
 ```
 
 `Statement`, `OwnerHoldings` (built on the summaries) and the rest are in [`views.rs`](../examples/bank/src/views.rs). More in [Views](views.md).

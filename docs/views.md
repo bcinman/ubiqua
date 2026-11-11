@@ -159,10 +159,10 @@ bank.view::<Statement>().list(&sam, Cursor::START, 10)   // [Entry { cursor: 1, 
 
 ```rust
 let receipt = bank.send(&sam, WithdrawMoney { amount: 30 })?;
-let summary = summaries.at_least(&receipt)?.get(&sam);
+let summary = summaries.get_at_least(&sam, &receipt)?;
 ```
 
-`at_least` fails with `NotCaughtUp` when the view hasn't applied that version, or that stream doesn't reach it. A stream reaches `OwnerHoldings` through `AccountSummary`, so an account's receipt works there too.
+`get_at_least` fails with `NotCaughtUp` when the view hasn't applied that version, or that stream doesn't reach it. A stream reaches `OwnerHoldings` through `AccountSummary`, so an account's receipt works there too.
 
 ## Follow it live
 
@@ -184,11 +184,7 @@ render(state);
 let feed = summaries.events(&sam, cursor);
 ```
 
-`watch` sends the state now, then each time it changes:
-
-```rust
-let watch = summaries.watch(&sam);   // Snapshot { state: None, cursor: 0 }, then one per change
-```
+To redraw a key's state whenever it changes, use a client's [`live`](client.md#follow-it-live).
 
 ## Use it from a UI
 

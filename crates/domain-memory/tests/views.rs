@@ -242,8 +242,8 @@ fn at_least_counts_events_the_view_skips_and_refuses_other_streams() {
     let joined = memory.send(&ClubId::new("chess"), Join { member: "sam".into() }).unwrap();
 
     let view = memory.view::<Totals>();
-    assert_eq!(view.at_least(&noted).unwrap().get(&w("a")), Some(5));
-    let Err(error) = view.at_least(&joined) else { panic!("Club/chess isn't a source of Totals") };
+    assert_eq!(view.get_at_least(&w("a"), &noted).unwrap(), Some(5));
+    let Err(error) = view.get_at_least(&w("a"), &joined) else { panic!("Club/chess isn't a source of Totals") };
     assert_eq!((error.stream.as_str(), error.wanted, error.applied), ("Club/chess", 1, 0));
 }
 
@@ -351,7 +351,7 @@ fn a_view_that_panics_falls_behind_without_failing_the_command_and_applies_each_
 
     // The next read drains the inbox and catches up.
     let view = memory.view::<Flaky>();
-    assert_eq!(view.at_least(&receipt).unwrap().get(&w("a")), Some(14));
+    assert_eq!(view.get_at_least(&w("a"), &receipt).unwrap(), Some(14));
     memory.send(&w("a"), credit(2)).unwrap();
     assert_eq!(view.get(&w("a")), Some(16));
     assert_eq!(*FLAKY_APPLIED.lock().unwrap(), [1, 13, 2]);

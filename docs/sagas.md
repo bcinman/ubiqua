@@ -58,7 +58,7 @@ The struct is the run's input. A policy starts it:
 impl React for TransferExecution {
     async fn react(&self, cx: &PolicyCx<Self>, input: TransferExecutionInput) -> Result<(), PolicyError> {
         let TransferExecutionInput::TransferRequested(requested) = input;
-        let transfer = cx.source::<Transfer>().expect("reads transfers").clone();
+        let transfer = cx.source_id().clone();
         let TransferRequested { from, to, amount, by } = requested;
         cx.start_saga(&transfer, ExecuteTransfer { from, to, amount, by })?;
         Ok(())

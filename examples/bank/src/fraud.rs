@@ -39,7 +39,7 @@ impl React for FraudReview {
         if withdrawn.amount < SCORED_FROM {
             return Ok(());
         }
-        let account = cx.source::<Account>().expect("reads accounts").clone();
+        let account = cx.source_id().clone();
         let Risk(risk) = cx.call(ScoreWithdrawal { account: account.clone(), amount: withdrawn.amount }).await?;
         if risk >= 90 {
             cx.send(&account, FreezeAccount)?;

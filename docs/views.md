@@ -88,6 +88,8 @@ cx.at()                 // when it was recorded
 cx.key()                // the key being updated
 ```
 
+A view that reads one source has `cx.source_id()`, the id itself, with no `Option`.
+
 ## Build on other views
 
 A view can read another view's emitted events. Each arrives with that view's state after it.
@@ -110,7 +112,7 @@ impl KeyOf<AccountSummary> for OwnerHoldings {
 
 impl Apply for OwnerHoldings {
     fn apply(holdings: &mut Holdings, _: OwnerHoldingsInput, cx: &mut ViewCx<Self>) {
-        let account = cx.source::<AccountSummary>().unwrap().clone();   // the summary's key
+        let account = cx.source_id().clone();                          // the summary's key
         let summary = cx.state::<AccountSummary>().unwrap();            // its state after the event
         holdings.balances.insert(account, summary.balance);
     }

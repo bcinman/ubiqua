@@ -413,12 +413,14 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
         quote!(const _: () = { #[allow(dead_code)] fn validates() { ::domain::__assert_validate::<#name>(); } };)
     };
 
+    let one_source = one_source(name, &sources);
     Ok(quote! {
         #input_union
         #event_union
         #rejection_union
         #validate
         #keyed
+        #one_source
 
         impl ::domain::View for #name {
             const NAME: &'static str = #tag;
@@ -601,6 +603,7 @@ fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
     let doc = format!("The events `{name}` reacts to.");
     let input_union = union(&input.vis, &input_enum, &reads_of(&sources), &doc, Kind::Events);
     let source_paths: Vec<&Path> = sources.iter().map(|(source, _)| source).collect();
+    let one_source = one_source(name, &sources);
     let reacts = sources.iter().map(|(source, list)| {
         let pick = pick_input(source, list, &input_enum);
         quote! {
@@ -627,6 +630,17 @@ fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
         }
 
         #( #reacts )*
+        #one_source
+    })
+}
+
+/// `impl OneSource` when `from(..)` lists one source.
+fn one_source(name: &Ident, sources: &[(Path, Vec<Path>)]) -> Option<Tokens> {
+    let [(source, _)] = sources else { return None };
+    Some(quote! {
+        impl ::domain::host::OneSource for #name {
+            type Source = #source;
+        }
     })
 }
 

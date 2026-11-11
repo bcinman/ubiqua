@@ -83,6 +83,15 @@ impl<P: Policy> PolicyCx<P> {
         (*self.delivery.payload).downcast_ref::<SourcePayload<S>>().map(|(id, _, _)| id)
     }
 
+    /// The aggregate instance or view key that recorded the event, for a policy that reacts to one
+    /// source.
+    pub fn source_id(&self) -> &<P::Source as Source>::SourceId
+    where
+        P: domain::host::OneSource,
+    {
+        self.source::<P::Source>().expect("a policy's events come from the sources it reacts to")
+    }
+
     /// If the event came from the view `S`, that key's state after it.
     pub fn state<S: Source>(&self) -> Option<&S::SourceState> {
         (*self.delivery.payload).downcast_ref::<SourcePayload<S>>().map(|(_, _, state)| state)

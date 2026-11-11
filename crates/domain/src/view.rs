@@ -192,6 +192,15 @@ impl<'a, V: View> ViewCx<'a, V> {
         self.payload.downcast_ref::<SourcePayload<S>>().map(|(_, _, state)| state)
     }
 
+    /// The aggregate instance or view key that recorded the event, for a view that reads one
+    /// source.
+    pub fn source_id(&self) -> &<V::Source as Source>::SourceId
+    where
+        V: crate::host::OneSource,
+    {
+        self.source::<V::Source>().expect("a view's events come from the sources it reads")
+    }
+
     /// Emit an event on this key, after the state update.
     pub fn emit(&mut self, event: impl Into<V::Event>) {
         self.emitted.push(event.into());

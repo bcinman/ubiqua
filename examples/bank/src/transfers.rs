@@ -101,7 +101,7 @@ pub struct TransferExecution;
 impl React for TransferExecution {
     async fn react(&self, cx: &PolicyCx<Self>, input: TransferExecutionInput) -> Result<(), PolicyError> {
         let TransferExecutionInput::TransferRequested(requested) = input;
-        let transfer = cx.source::<Transfer>().expect("reads transfers").clone();
+        let transfer = cx.source_id().clone();
         let TransferRequested { from, to, amount, by } = requested;
         // Keyed by the transfer, so running twice starts one run.
         cx.start_saga(&transfer, ExecuteTransfer { from, to, amount, by })?;

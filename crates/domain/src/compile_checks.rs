@@ -134,6 +134,30 @@
 //!
 //! ## Views
 //!
+//! A view that reads two sources asks for `source_id`, which only a view with one source has:
+//!
+//! ```compile_fail,E0599
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # domain::id!(pub struct GateId;);
+//! # #[domain::event] pub struct Closed;
+//! # #[domain::event] pub struct Shut;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Closed), commands())] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
+//! # #[derive(Aggregate)] #[aggregate(id = GateId, state = (), events(Shut), commands())] pub struct Gate;
+//! # impl Evolve for Gate { fn evolve(_: &mut (), _: &GateEvent) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed), Gate(Shut)), key_of(Gate))]
+//! pub struct Log;
+//! # impl KeyOf<Gate> for Log { fn key_of(_: Origin<'_, Gate>, _: &LogInput) -> Option<DoorId> { None } }
+//!
+//! impl Apply for Log {
+//!     fn apply(_: &mut (), _: LogInput, cx: &mut ViewCx<Self>) {
+//!         let door = cx.source_id(); // use `cx.source::<Door>()`
+//!     }
+//! }
+//! ```
+//!
 //! A view that reads an event its source never records:
 //!
 //! ```compile_fail,E0277

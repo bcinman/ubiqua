@@ -91,7 +91,7 @@ impl KeyOf<AccountSummary> for OwnerHoldings {
 
 impl Apply for OwnerHoldings {
     fn apply(holdings: &mut Holdings, _: OwnerHoldingsInput, cx: &mut ViewCx<Self>) {
-        let account = cx.source::<AccountSummary>().expect("reads summaries only").clone();
+        let account = cx.source_id().clone();
         let summary = cx.state::<AccountSummary>().expect("reads summaries only");
         holdings.balances.insert(account, summary.balance);
     }

@@ -21,7 +21,7 @@ impl React for FraudReview {
         if withdrawn.amount < SCORED_FROM {
             return Ok(());
         }
-        let account = cx.source::<Account>().expect("reads accounts").clone();
+        let account = cx.source_id().clone();
         let Risk(risk) = cx.call(ScoreWithdrawal { account: account.clone(), amount: withdrawn.amount }).await?;
         if risk >= 90 {
             cx.send(&account, FreezeAccount)?;
@@ -76,7 +76,8 @@ pub enum NotifyInput {
 
 | `cx.` | |
 | --- | --- |
-| `source::<Account>()` | the id of the aggregate that recorded the event |
+| `source_id()` | the id of the aggregate that recorded the event, for a policy with one source |
+| `source::<Account>()` | the same, as `Some` when `Account` recorded it, for a policy with several |
 | `state::<Account>()` | that aggregate's state, just after the event |
 | `at()` / `now()` | when the event happened / the time now |
 | `send(&id, cmd)` | send a command |

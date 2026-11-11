@@ -222,6 +222,25 @@ fn a_watch_sends_the_state_now_and_on_each_change_only() {
 }
 
 #[test]
+fn notify_fires_for_items_already_waiting_then_on_each_arrival() {
+    let memory = Memory::new().with::<Bank>();
+    let watch = memory.view::<Totals>().watch(&w("a"));
+    memory.send(&w("a"), credit(5)).unwrap(); // arrives before anyone listens
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let counter = calls.clone();
+    watch.notify(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    memory.send(&w("a"), credit(2)).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let states: Vec<_> = watch.drain().into_iter().map(|s| s.state).collect();
+    assert_eq!(states, [None, Some(5), Some(7)]);
+}
+
+#[test]
 fn at_least_counts_events_the_view_skips_and_refuses_other_streams() {
     let memory = Memory::new().with::<Bank>();
     memory.send(&w("a"), credit(5)).unwrap();
@@ -329,22 +348,16 @@ impl Apply for Flaky {
 struct FlakyBank;
 
 #[test]
-fn a_view_that_panics_keeps_its_deliveries_and_applies_each_once_later() {
+fn a_view_that_panics_falls_behind_without_failing_the_command_and_applies_each_event_once() {
     let memory = Memory::new().with::<FlakyBank>();
     memory.send(&w("a"), credit(1)).unwrap();
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        memory.send_with_id(&w("a"), credit(13), "req-13").unwrap();
-    }));
-    assert!(failed.is_err());
-
-    // The command committed; only the view is behind.
-    assert_eq!(memory.state(&w("a")), 14);
-    let retry = memory.send_with_id(&w("a"), credit(13), "req-13").unwrap();
-    assert_eq!(retry.version, 2);
+    let receipt = memory.send(&w("a"), credit(13)).expect("the command commits though its view fails");
+    assert_eq!((receipt.version, memory.state(&w("a"))), (2, 14));
+    assert_eq!(*FLAKY_APPLIED.lock().unwrap(), [1], "the view is behind");
 
     // The next read drains the inbox and catches up.
     let view = memory.view::<Flaky>();
-    assert_eq!(view.at_least(&retry).unwrap().get(&w("a")), Some(14));
+    assert_eq!(view.at_least(&receipt).unwrap().get(&w("a")), Some(14));
     memory.send(&w("a"), credit(2)).unwrap();
     assert_eq!(view.get(&w("a")), Some(16));
     assert_eq!(*FLAKY_APPLIED.lock().unwrap(), [1, 13, 2]);

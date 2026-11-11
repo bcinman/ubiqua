@@ -7,6 +7,7 @@ name = "bank"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "domain-client",
  "domain-memory",
  "domain-story",
 ]
@@ -16,6 +17,14 @@ name = "domain"
 version = "0.1.0"
 dependencies = [
  "domain-macros",
+]
+
+[[package]]
+name = "domain-client"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "domain-memory",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@
 
 extern crate self as domain;
 
+mod api;
 mod maybe;
 mod values;
 mod view;
@@ -16,7 +17,8 @@ pub mod compile_checks;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
-pub use domain_macros::{Aggregate, Command, Event, Model, Rejection, View};
+pub use api::{Api, Reads, Sends, SentVia};
+pub use domain_macros::{Aggregate, Api, Command, Event, Model, Rejection, View};
 pub use maybe::{MaybeSend, MaybeSync};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{

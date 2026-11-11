@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 domain.workspace = true
+domain-client.workspace = true
 domain-memory.workspace = true
 
 [dev-dependencies]

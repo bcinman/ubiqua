@@ -132,6 +132,9 @@ pub enum SendError<R> {
     Rejected(R),
     /// This command id was already used for a different kind of command on this stream.
     CommandIdReused { stream: StreamId, command_id: CommandId },
+    /// The outcome is unknown: the command may have committed. Send it again with the same
+    /// `command_id` to find out; it takes effect at most once.
+    Unavailable { command_id: CommandId, reason: String },
 }
 
 impl<R: fmt::Display> fmt::Display for SendError<R> {
@@ -140,6 +143,9 @@ impl<R: fmt::Display> fmt::Display for SendError<R> {
             Self::Rejected(r) => write!(f, "rejected: {r}"),
             Self::CommandIdReused { stream, command_id } => {
                 write!(f, "command id {command_id} was already used for another command on {stream}")
+            }
+            Self::Unavailable { command_id, reason } => {
+                write!(f, "unavailable ({reason}); it may have committed, so retry with command id {command_id}")
             }
         }
     }

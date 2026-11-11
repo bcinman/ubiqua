@@ -19,3 +19,8 @@ domain::id!(
 #[derive(domain::Model)]
 #[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
 pub struct Bank;
+
+/// What an app may do with a bank.
+#[derive(domain::Api)]
+#[api(commands(OpenAccount, DepositMoney, WithdrawMoney), views(AccountSummary, OwnerHoldings, Statement))]
+pub struct BankApi;

@@ -19,6 +19,27 @@ pub(crate) type AnyBox = Box<dyn Any + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type AnyBox = Box<dyn Any>;
 
+/// Called when items arrive on a subscription, with no lock of the view held.
+#[cfg(not(target_arch = "wasm32"))]
+type Notify = Arc<dyn Fn() + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+type Notify = Arc<dyn Fn()>;
+
+/// A subscriber to tell about new items, once the view's lock is released.
+enum Wakeup {
+    Waker(Waker),
+    Notify(Notify),
+}
+
+impl Wakeup {
+    fn wake(self) {
+        match self {
+            Wakeup::Waker(waker) => waker.wake(),
+            Wakeup::Notify(notify) => notify(),
+        }
+    }
+}
+
 // A view's deliveries carry `(V::Key, V::Event, V::State)`, which is its `SourcePayload`: the View
 // derive makes its `Source` types those three.
 
@@ -134,7 +155,7 @@ impl<V: Apply> ViewHost<V> {
         self.routes.keys().copied()
     }
 
-    fn apply_one(&self, data: &mut Data<V>, delivery: &Delivery) {
+    fn apply_one(&self, data: &mut Data<V>, delivery: &Delivery, wakeups: &mut Vec<Wakeup>) {
         let route = self.routes[&delivery.source];
         if let Some((key, input)) = route(delivery) {
             // Run the view's code on copies, so a panic leaves the key as it was.
@@ -168,11 +189,11 @@ impl<V: Apply> ViewHost<V> {
                     at: delivery.at,
                 };
                 k.entries.push(entry.clone());
-                publish(&mut k.feeds, Frame::Entry(entry));
+                publish(&mut k.feeds, Frame::Entry(entry), wakeups);
             }
             if changed {
                 let snapshot = k.snapshot();
-                publish(&mut k.watches, snapshot);
+                publish(&mut k.watches, snapshot, wakeups);
             }
         }
         data.progress.insert(delivery.stream.clone(), delivery.seq);
@@ -190,16 +211,19 @@ impl<V: Apply> Consumer for ViewHost<V> {
     }
 
     fn drain(&self) {
+        let mut wakeups = Vec::new();
         {
             // Holding `data` makes this the only drainer; a delivery leaves the inbox once applied.
             let mut data = lock(&self.data);
             loop {
                 let next = lock(&self.inbox).front().cloned();
                 let Some(delivery) = next else { break };
-                self.apply_one(&mut data, &delivery);
+                self.apply_one(&mut data, &delivery, &mut wakeups);
                 lock(&self.inbox).pop_front();
             }
         }
+        // Subscribers run outside the lock, so they may read this view or send commands.
+        wakeups.into_iter().for_each(Wakeup::wake);
         let downstream = lock(&self.downstream).clone();
         downstream.iter().for_each(|consumer| consumer.drain());
     }
@@ -328,6 +352,20 @@ impl<T> Subscription<T> {
         lock(&self.queue.inner).items.drain(..).collect()
     }
 
+    /// Calls `notify` whenever items arrive, with no lock held, so it may read or send.
+    /// Calls it now too if items are already waiting. Read them with `try_next`.
+    pub fn notify(&self, notify: impl Fn() + MaybeSend + MaybeSync + 'static) {
+        let notify: Notify = Arc::new(notify);
+        let waiting = {
+            let mut q = lock(&self.queue.inner);
+            q.notify = Some(notify.clone());
+            !q.items.is_empty()
+        };
+        if waiting {
+            notify();
+        }
+    }
+
     /// Waits for the next item. Uses only the waker, so it runs on any executor.
     pub fn recv(&mut self) -> Recv<'_, T> {
         Recv { queue: &self.queue }
@@ -361,26 +399,24 @@ struct Queue<T> {
 struct QueueInner<T> {
     items: VecDeque<T>,
     waker: Option<Waker>,
+    notify: Option<Notify>,
 }
 
 impl<T> Default for Queue<T> {
     fn default() -> Self {
-        Self { inner: Mutex::new(QueueInner { items: VecDeque::new(), waker: None }) }
+        Self { inner: Mutex::new(QueueInner { items: VecDeque::new(), waker: None, notify: None }) }
     }
 }
 
-/// Sends `item` to every live subscriber, dropping the ones that are gone.
-fn publish<T: Clone>(subscribers: &mut Vec<Weak<Queue<T>>>, item: T) {
+/// Queues `item` for every live subscriber, dropping the ones that are gone. The subscribers to
+/// wake go into `wakeups`, for after the view's lock is released.
+fn publish<T: Clone>(subscribers: &mut Vec<Weak<Queue<T>>>, item: T, wakeups: &mut Vec<Wakeup>) {
     subscribers.retain(|weak| {
         let Some(queue) = weak.upgrade() else { return false };
-        let waker = {
-            let mut q = lock(&queue.inner);
-            q.items.push_back(item.clone());
-            q.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
+        let mut q = lock(&queue.inner);
+        q.items.push_back(item.clone());
+        wakeups.extend(q.waker.take().map(Wakeup::Waker));
+        wakeups.extend(q.notify.clone().map(Wakeup::Notify));
         true
     });
 }

@@ -201,6 +201,36 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
     model(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
+/// `#[api(commands(..), views(..))]`: `impl Api`, plus `Sends` and `Reads` for each one listed.
+#[proc_macro_derive(Api, attributes(api))]
+pub fn derive_api(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    api(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+fn api(input: &DeriveInput) -> syn::Result<Tokens> {
+    let name = &input.ident;
+    let (mut commands, mut views) = (Vec::new(), Vec::new());
+    parse_attr(input, "api", |meta| {
+        if meta.path.is_ident("commands") {
+            commands = paths(&meta)?;
+        } else if meta.path.is_ident("views") {
+            views = paths(&meta)?;
+        } else {
+            return Err(meta.error("expected `commands` or `views`"));
+        }
+        Ok(())
+    })?;
+    let tag = name.to_string();
+    Ok(quote! {
+        impl ::domain::Api for #name {
+            const NAME: &'static str = #tag;
+        }
+        #( impl ::domain::Sends<#commands> for #name {} )*
+        #( impl ::domain::Reads<#views> for #name {} )*
+    })
+}
+
 fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());

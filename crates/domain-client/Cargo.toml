@@ -1,0 +1,10 @@
+[package]
+name = "domain-client"
+description = "What a UI uses: a typed client for a domain model's Api, Pending results and LiveViews."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain.workspace = true
+domain-memory.workspace = true

@@ -370,10 +370,7 @@ struct Shaky;
 fn reading_a_view_first_catches_up_the_views_it_reads() {
     let memory = Memory::new().with::<Shaky>();
     memory.send(&a("s1"), Open { owner: "sam".into() }).unwrap();
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        memory.send(&a("s1"), Move { amount: 13 }).unwrap();
-    }));
-    assert!(failed.is_err());
+    memory.send(&a("s1"), Move { amount: 13 }).expect("the command commits though its view fails");
 
     // Nothing else is sent: the read alone must apply the summary's pending move and pass it on.
     assert_eq!(memory.view::<ShakyTotal>().get(&owner("sam")), Some(13));

@@ -1,43 +1,42 @@
-//! `cargo run -p bank`: opens an account, moves money, shows a refusal, and reads the views.
+//! `cargo run -p bank`: an app's view of a bank. It shows a live summary, sends commands the way
+//! button handlers would, and checks results once per frame, as a UI loop does.
 
 use bank::*;
-use domain::{Cursor, Frame};
+use domain::Cursor;
+use domain_client::Client;
 use domain_memory::Memory;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn main() {
-    let bank = Memory::new().with::<Bank>();
+    // The model runs on its own thread; the app talks to it through a client.
+    let client = Client::<BankApi>::in_process(Arc::new(Memory::new().with::<Bank>()));
     let sam = AccountId::new("sam-main");
-    let savings = AccountId::new("sam-savings");
 
-    // Follow the statement live, from the start.
-    let statement = bank.view::<Statement>().events(&sam, Cursor::START);
+    // Redraw whenever the summary changes.
+    let summary = client.view::<AccountSummary>().live(&sam);
+    let _redraw = summary.on_change(|summary, version| println!("redraw #{version}: {summary:?}"));
 
-    bank.send(&sam, OpenAccount { owner: "sam".into() }).unwrap();
+    // Button handlers: send and move on.
+    client.send(&sam, OpenAccount { owner: "sam".into() });
+    client.send(&sam, DepositMoney { amount: 100 });
+    client.send(&sam, WithdrawMoney { amount: 30 });
+    let too_much = client.send(&sam, WithdrawMoney { amount: 500 });
 
-    let receipt = bank.send(&sam, DepositMoney { amount: 100 }).unwrap();
-    println!("deposited 100, balance {}", receipt.reply.balance);
-
-    let receipt = bank.send(&sam, WithdrawMoney { amount: 30 }).unwrap();
-    println!("withdrew 30, balance {}", receipt.reply.balance);
-
-    match bank.send(&sam, WithdrawMoney { amount: 500 }) {
-        Err(error) => println!("withdraw 500: {error}"),
-        Ok(_) => unreachable!("the account only holds 70"),
-    }
-
-    // Read your own write: the summary has applied the withdrawal.
-    let summary = bank.view::<AccountSummary>().at_least(&receipt).unwrap().get(&sam).unwrap();
-    println!("summary: {summary:?}");
-
-    bank.send(&savings, OpenAccount { owner: "sam".into() }).unwrap();
-    bank.send(&savings, DepositMoney { amount: 500 }).unwrap();
-    let holdings = bank.view::<OwnerHoldings>().get(&OwnerId::new("sam")).unwrap();
-    println!("sam holds {} across {:?}", holdings.total(), holdings.balances);
-
-    for frame in statement.drain() {
-        match frame {
-            Frame::CaughtUp { cursor } => println!("statement caught up at {}", cursor.seq()),
-            Frame::Entry(line) => println!("statement #{}: {:?}", line.cursor.seq(), line.event),
+    // The frame loop checks what it's waiting on.
+    let refusal = loop {
+        if let Some(sent) = too_much.try_get() {
+            break sent.expect_err("the account only holds 70");
         }
+        std::thread::sleep(Duration::from_millis(16));
+    };
+    println!("withdraw 500: {refusal}");
+
+    let (latest, version) = summary.latest();
+    println!("showing #{version}: {latest:?}");
+
+    let statement = client.view::<Statement>().list(&sam, Cursor::START, 10).try_get().unwrap().unwrap();
+    for line in statement {
+        println!("statement #{}: {:?}", line.cursor.seq(), line.event);
     }
 }

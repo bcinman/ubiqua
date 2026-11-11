@@ -115,6 +115,25 @@ error[E0277]: a `DoorId` source can't key a view keyed by `HouseId`
 error[E0277]: `Log` has no `impl Apply`
 ```
 
+## A command or view the Api doesn't list
+
+```rust
+#[api(commands(OpenAccount), views(AccountSummary))]
+pub struct BankApi;
+
+client.send(&sam, DepositMoney { amount: 1 });
+client.view::<Statement>();
+```
+
+```text
+error[E0277]: `BankApi` doesn't let clients send `DepositMoney`
+  add `DepositMoney` to `#[api(commands(..))]`
+error[E0277]: `BankApi` doesn't let clients read `Statement`
+  add `Statement` to `#[api(views(..))]`
+```
+
+The `send` check is in [`domain-client`'s `compile_checks.rs`](../crates/domain-client/src/compile_checks.rs).
+
 ## A missing attribute
 
 ```rust

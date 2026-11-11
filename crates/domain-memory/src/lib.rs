@@ -2,7 +2,8 @@
 //!
 //! Each aggregate instance decides one command at a time; different instances run in parallel.
 //! A command's events, new state, receipt and deliveries to views commit together or not at all.
-//! Views apply each source's events in order, at least once, after the commit.
+//! Views apply each source's events in order, at least once, after the commit. A view that panics
+//! doesn't fail the command: it falls behind, and reading it panics until it catches up.
 
 mod views;
 
@@ -96,8 +97,13 @@ impl Memory {
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
+        self.send_with_id(id, command, self.new_command_id())
+    }
+
+    /// A command id no other command sent here has used.
+    pub fn new_command_id(&self) -> CommandId {
         let n = self.sent.fetch_add(1, Ordering::Relaxed) + 1;
-        self.send_with_id(id, command, CommandId::new(format!("memory-{n}")))
+        CommandId::new(format!("memory-{n}"))
     }
 
     /// Like [`send`](Self::send), under your own command id. Sending the same id again returns the
@@ -186,7 +192,9 @@ impl Memory {
     /// Applies queued deliveries to the views that read `A`. Runs after the instance is unlocked.
     fn deliver<A: Aggregate>(&self) {
         for consumer in self.consumers.get(&TypeId::of::<A>()).into_iter().flatten() {
-            consumer.drain();
+            // The command has committed, so a view that panics doesn't fail it. The view stays
+            // behind with its deliveries, and tries them again on the next read or command.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| consumer.drain()));
         }
     }
 

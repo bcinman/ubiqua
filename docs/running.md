@@ -54,7 +54,7 @@ Err(SendError::CommandIdReused { stream, command_id })
 
 ## All or nothing
 
-A command's events, new state, receipt and deliveries to views commit together. A rejection records nothing; so does a panic in `evolve` or `reply`.
+A command's events, new state, receipt and deliveries to views commit together. A rejection records nothing; so does a panic in `evolve` or `reply`. A panic in a view doesn't undo the command: the view falls behind and retries on the next read.
 
 ```diagram
 send ──▶ decide ──▶ commit ──────────────────▶ apply to views ──▶ return receipt
@@ -123,4 +123,4 @@ There's no system clock there, so use `Memory::with_clock`. And state there does
 
 That's `MaybeSend` and `MaybeSync`: `Send` and `Sync` natively, nothing on wasm. Bound on them in code meant for both.
 
-Next: [Stories](stories.md).
+Next: [The client](client.md).

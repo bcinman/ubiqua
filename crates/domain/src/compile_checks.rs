@@ -196,3 +196,66 @@
 //! pub struct Log;
 //! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
 //! ```
+//!
+//! An Api that lists a command and a view compiles:
+//!
+//! ```
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &bool) {} }
+//! # #[derive(View)] #[view(key = DoorId, from(Door(Closed)))] pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! fn client_can<A: Sends<Close> + Reads<Log>>() {}
+//!
+//! #[derive(Api)]
+//! #[api(commands(Close), views(Log))]
+//! pub struct DoorApi;
+//!
+//! client_can::<DoorApi>();
+//! ```
+//!
+//! A client sends a command the Api doesn't list:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &bool) {} }
+//! # #[derive(View)] #[view(key = DoorId, from(Door(Closed)))] pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! fn client_can_send<A: Sends<Close>>() {}
+//!
+//! #[derive(Api)]
+//! #[api(commands(), views(Log))]
+//! pub struct DoorApi;
+//!
+//! client_can_send::<DoorApi>();
+//! ```
+//!
+//! A client reads a view the Api doesn't list:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Debug)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq)] pub struct Closed;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &bool) {} }
+//! # #[derive(View)] #[view(key = DoorId, from(Door(Closed)))] pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! fn client_can_read<A: Reads<Log>>() {}
+//!
+//! #[derive(Api)]
+//! #[api(commands(Close), views())]
+//! pub struct DoorApi;
+//!
+//! client_can_read::<DoorApi>();
+//! ```

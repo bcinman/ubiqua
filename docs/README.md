@@ -33,8 +33,9 @@ command ──▶ aggregate ──▶ events ──▶ views
 3. [Aggregates](aggregates.md): state, `evolve`, `decide`, `reply`.
 4. [Views](views.md): read models, live feeds, reading your own write.
 5. [Running a model](running.md): `Memory`, retries, threads, the web.
-6. [Stories](stories.md): test rules as given, when, then.
-7. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+6. [The client](client.md): what an app uses: send, read, follow live, with any UI.
+7. [Stories](stories.md): test rules as given, when, then.
+8. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
 
 ## Crates
 
@@ -42,10 +43,11 @@ command ──▶ aggregate ──▶ events ──▶ views
 | --- | --- |
 | `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
 | `domain-memory` | `Memory`: runs a model and its views in memory. |
+| `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses. |
 | `domain-story` | `Story`: given, when, then. |
 
 No UI framework and no async runtime. Everything builds for `wasm32-unknown-unknown`.
 
 ## Not yet
 
-Policies, projections, sagas, persistence, the client and server. See the design sketch's build order.
+Persistence and view versioning, a server and a client that talks to it, policies, projections, sagas. See the design sketch's build order.

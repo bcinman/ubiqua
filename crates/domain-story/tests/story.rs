@@ -103,3 +103,12 @@ fn checks_each_command_before_the_next() {
 fn fails_when_events_differ() {
     Story::new().when(&lamp(), Toggle).then(&lamp(), [on_at(1)]);
 }
+
+#[test]
+fn outcome_and_memory_reach_what_the_steps_dont_check() {
+    let story = Story::new().given(&lamp(), [on_at(0)]);
+    assert!(story.memory().state(&lamp()).on, "the history is in the story's memory");
+    let toggled = story.when(&lamp(), Toggle).then(&lamp(), [Switched { on: false, at: Timestamp::from_millis(0) }]);
+    let receipt = toggled.outcome().as_ref().expect("toggled");
+    assert_eq!((receipt.version, receipt.reply), (2, false));
+}

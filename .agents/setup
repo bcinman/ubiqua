@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb to build and test this workspace: the nightly Rust that mise.toml pins,
+# the wasm target the docs check against, and the crates in Cargo.lock.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+step() { echo "==> $1 ($(date +%T))"; }
+
+if ! command -v rustup >/dev/null && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+  step "installing rustup"
+  # Adds `. "$HOME/.cargo/env"` to the shell profiles, so later shells find cargo.
+  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+
+step "installing nightly Rust"
+rustup toolchain install nightly --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+rustup default nightly
+
+step "fetching crates"
+cargo fetch --locked
+
+step "building tests"
+cargo test --workspace --no-run --locked --quiet
+
+step "done"

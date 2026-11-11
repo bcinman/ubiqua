@@ -32,26 +32,25 @@ let id = AccountId::new("sam-main");
 ## 3. Declare a command and its outcomes
 
 ```rust
-#[derive(Command, Debug)]
-#[command(target = AccountId, events(MoneyWithdrawn), rejects(NotOpen, InsufficientFunds), reply = Balance)]
+#[domain::command(target = AccountId, events(MoneyWithdrawn), rejects(NotOpen, InsufficientFunds), reply = Balance)]
 pub struct WithdrawMoney {
     pub amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct MoneyWithdrawn {
     pub amount: u64,
     pub balance_after: u64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct InsufficientFunds {
     pub balance: u64,
     pub requested: u64,
 }
 ```
 
-Events are stored and rejections cross the network, so they derive `Serialize` and `Deserialize`. So do commands, replies and view state.
+Events are stored and rejections cross the network, so each attribute also derives `Serialize` and `Deserialize`, with `Clone`, `Debug` and `PartialEq` where they're needed. Replies and view state are plain types: derive `Serialize` and `Deserialize` on them yourself.
 
 `OpenAccount` and `DepositMoney` follow the same shape: see [`commands.rs`](../examples/bank/src/commands.rs).
 

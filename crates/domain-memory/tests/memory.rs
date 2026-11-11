@@ -1,28 +1,25 @@
-use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Rejection, SendError};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, SendError};
 use domain_memory::Memory;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 domain::id!(
     struct CounterId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Incremented), reply = u64)]
+#[domain::command(target = CounterId, events(Incremented), reply = u64)]
 struct Increment;
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Incremented), rejects(TooHigh))]
+#[domain::command(target = CounterId, events(Incremented), rejects(TooHigh))]
 struct IncrementBelow {
     limit: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Incremented {
     value_after: u64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 struct TooHigh;
 
 #[derive(Aggregate)]

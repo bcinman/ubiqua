@@ -1,6 +1,5 @@
-use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Model, Position, Projection, Timestamp};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Position, Projection, Timestamp};
 use domain_memory::{Memory, Project, ProjectionError, ProjectionInput};
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,11 +7,10 @@ domain::id!(
     pub struct CounterId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Bumped))]
+#[domain::command(target = CounterId, events(Bumped))]
 pub struct Bump;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Bumped;
 
 #[derive(Aggregate)]

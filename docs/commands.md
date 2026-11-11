@@ -3,8 +3,7 @@
 ## A command
 
 ```rust
-#[derive(Command, Debug)]
-#[command(
+#[domain::command(
     target = AccountId,                        // which instance it goes to
     events(MoneyWithdrawn),                    // what it may record
     rejects(NotOpen, InsufficientFunds),       // why it may be refused (optional)
@@ -24,6 +23,8 @@ pub enum WithdrawMoneyRejection { NotOpen(NotOpen), InsufficientFunds(Insufficie
 
 Each member converts into its enum with `.into()`. Rejections also convert with `?`.
 
+The attribute also derives `Debug`, `Serialize` and `Deserialize`, which every command needs. Add others with `#[derive(..)]` after it, such as `Clone` for a command a view [predicts](offline.md).
+
 ## Name it after the intent
 
 | Good | Bad |
@@ -41,7 +42,7 @@ MoneyWithdrawn { amount: 30, balance_after: 70 }    // what the account decided
 ## An event
 
 ```rust
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct MoneyWithdrawn {
     pub amount: u64,
     pub balance_after: u64,
@@ -55,7 +56,7 @@ Name events in the past tense. They're facts: `evolve` must accept them. They're
 ## A rejection
 
 ```rust
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct InsufficientFunds {
     pub balance: u64,
     pub requested: u64,
@@ -67,13 +68,30 @@ assert_eq!(InsufficientFunds { balance: 50, requested: 80 }.to_string(),
 
 Carry what the caller needs to act on it. A rejection records nothing. It serializes, so a client across a network gets it by name.
 
+## Without the attributes
+
+Each attribute is a derive plus the derives its trait needs. Written out:
+
+```rust
+#[derive(Command, Debug, Serialize, Deserialize)]
+#[command(target = AccountId, events(MoneyWithdrawn), rejects(NotOpen, InsufficientFunds), reply = Balance)]
+pub struct WithdrawMoney { pub amount: u64 }
+
+#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MoneyWithdrawn { pub amount: u64, pub balance_after: u64 }
+
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InsufficientFunds { pub balance: u64, pub requested: u64 }
+```
+
+Use this form to choose the derives yourself, such as a hand-written `Serialize`.
+
 ## A fact that can't be refused
 
 Leave out `rejects`. The rejection enum is then empty, so `decide` can't return one.
 
 ```rust
-#[derive(Command, Debug)]
-#[command(target = AccountId, events(SettlementReceived, SettlementOnClosedAccount))]
+#[domain::command(target = AccountId, events(SettlementReceived, SettlementOnClosedAccount))]
 pub struct RecordSettlement {
     pub settlement_id: String,
     pub amount: u64,

@@ -1,6 +1,5 @@
 use domain::{
-    Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, Model, Policy, SendError, StreamId,
-    Timestamp, ViewCx,
+    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Model, Policy, SendError, StreamId, Timestamp, ViewCx,
 };
 use domain_memory::{Memory, PolicyCx, PolicyError, React};
 use domain_sqlite::Sqlite;
@@ -16,25 +15,22 @@ domain::id!(
     pub struct WalletId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = WalletId, events(Credited), reply = u64)]
+#[domain::command(target = WalletId, events(Credited), reply = u64)]
 pub struct Credit {
     amount: u64,
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = WalletId, events(Credited))]
+#[domain::command(target = WalletId, events(Credited))]
 pub struct Note;
 
 /// Succeeds only on a wallet with money in it, and records nothing.
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = WalletId, events(Credited), rejects(Empty))]
+#[domain::command(target = WalletId, events(Credited), rejects(Empty))]
 pub struct Claim;
 
 #[derive(domain::Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Empty;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Credited {
     amount: u64,
     total: u64,

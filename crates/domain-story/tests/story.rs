@@ -1,25 +1,23 @@
-use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Rejection, Timestamp};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Timestamp};
 use domain_story::Story;
-use serde::{Deserialize, Serialize};
 
 domain::id!(
     struct LampId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = LampId, events(Switched), rejects(Broken), reply = bool)]
+#[domain::command(target = LampId, events(Switched), rejects(Broken), reply = bool)]
 struct Toggle;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Switched {
     on: bool,
     at: Timestamp,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Smashed;
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 struct Broken;
 
 #[derive(Clone, Debug, Default)]

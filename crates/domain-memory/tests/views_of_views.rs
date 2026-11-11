@@ -1,6 +1,4 @@
-use domain::{
-    Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, KeyOf, Model, Origin, View, ViewCx,
-};
+use domain::{Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, KeyOf, Model, Origin, View, ViewCx};
 use domain_memory::Memory;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,35 +15,32 @@ domain::id!(
     struct Everyone;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Opened))]
+#[domain::command(target = AccountId, events(Opened))]
 struct Open {
     owner: String,
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Moved))]
+#[domain::command(target = AccountId, events(Moved))]
 struct Move {
     amount: i64,
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Closed))]
+#[domain::command(target = AccountId, events(Closed))]
 struct Close;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Opened {
     owner: String,
 }
 
 /// Carries no owner: a view keyed by owner must find it in the summary's state.
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Moved {
     amount: i64,
     balance_after: i64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Closed;
 
 #[derive(Aggregate)]

@@ -1,9 +1,6 @@
-use domain::{
-    Aggregate, Call, Command, Cx, Decide, Decision, Event, Evolve, ExternalSystem, Policy, Rejection, Timestamp,
-};
+use domain::{Aggregate, Call, Cx, Decide, Decision, Evolve, ExternalSystem, Policy, Timestamp};
 use domain_memory::{PolicyCx, PolicyError, React};
 use domain_story::Story;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 // Registering a customer opens their main account. A withdrawal is scored for fraud: a risky one
@@ -16,11 +13,10 @@ domain::id!(
     pub struct AccountId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CustomerId, events(CustomerRegistered))]
+#[domain::command(target = CustomerId, events(CustomerRegistered))]
 pub struct Register;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct CustomerRegistered;
 
 #[derive(Aggregate)]
@@ -38,44 +34,40 @@ impl Decide<Register> for Customer {
     fn reply(_: &()) {}
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(AccountOpened), rejects(AlreadyOpen))]
+#[domain::command(target = AccountId, events(AccountOpened), rejects(AlreadyOpen))]
 pub struct OpenAccount {
     owner: CustomerId,
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Withdrawn))]
+#[domain::command(target = AccountId, events(Withdrawn))]
 pub struct Withdraw {
     amount: u64,
 }
 
 /// Never rejects, so it can be scheduled. Records nothing when already frozen.
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Frozen))]
+#[domain::command(target = AccountId, events(Frozen))]
 pub struct Freeze;
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = AccountId, events(Thawed))]
+#[domain::command(target = AccountId, events(Thawed))]
 pub struct Thaw;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct AccountOpened {
     owner: CustomerId,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Withdrawn {
     amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Frozen;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Thawed;
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct AlreadyOpen;
 
 #[derive(Clone, Debug, Default)]
@@ -147,7 +139,7 @@ pub struct Score {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Risk(u32);
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct Blocked;
 
 #[derive(ExternalSystem)]

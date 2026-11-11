@@ -1,4 +1,4 @@
-use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Model, Rejection, Saga};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Saga};
 use domain_memory::{Memory, Run, SagaCx, SagaStatus, SignalError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -9,18 +9,16 @@ domain::id!(
     pub struct LogId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = LogId, events(Noted))]
+#[domain::command(target = LogId, events(Noted))]
 pub struct Note(String);
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = LogId, events(Noted), rejects(No))]
+#[domain::command(target = LogId, events(Noted), rejects(No))]
 pub struct Refuse;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Noted(String);
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct No;
 
 #[derive(Aggregate)]

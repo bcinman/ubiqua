@@ -1,5 +1,5 @@
 use crate::*;
-use domain::{Apply, Event, KeyOf, Origin, Predict, ReadCx, Validate, View, ViewCx};
+use domain::{Apply, KeyOf, Origin, Predict, ReadCx, Validate, View, ViewCx};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -115,7 +115,7 @@ impl Validate for Statement {
     }
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct StatementLine {
     pub kind: LineKind,
     pub amount: u64,

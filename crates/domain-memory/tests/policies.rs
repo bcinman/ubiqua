@@ -1,9 +1,8 @@
 use domain::{
-    Aggregate, Answer, Answered, Call, Command, CommandId, Cx, Decide, Decision, Event, Evolve, ExternalSystem, Model,
-    Policy, StreamId, Timestamp,
+    Aggregate, Answer, Answered, Call, CommandId, Cx, Decide, Decision, Evolve, ExternalSystem, Model, Policy,
+    StreamId, Timestamp,
 };
 use domain_memory::{Memory, PolicyCx, PolicyError, React, ScheduleError, UnscheduleError};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -13,18 +12,16 @@ domain::id!(
     pub struct CounterId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Bumped))]
+#[domain::command(target = CounterId, events(Bumped))]
 pub struct Bump;
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Pinged))]
+#[domain::command(target = CounterId, events(Pinged))]
 pub struct Ping;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Bumped;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct Pinged;
 
 #[derive(Aggregate)]

@@ -1,9 +1,6 @@
-use domain::{
-    Aggregate, Api, Apply, Command, Cx, Decide, Decision, Event, Evolve, Model, Rejection, SendError, View, ViewCx,
-};
+use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, SendError, View, ViewCx};
 use domain_client::{Client, LiveView, Pending, Read, ReadError};
 use domain_memory::Memory;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::task::{Context, Poll, Wake, Waker};
@@ -16,19 +13,18 @@ domain::id!(
     struct OtherId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = CounterId, events(Added), rejects(TooBig), reply = i64)]
+#[domain::command(target = CounterId, events(Added), rejects(TooBig), reply = i64)]
 struct Add {
     n: i64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Added {
     n: i64,
     total: i64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 struct TooBig;
 
 #[derive(Aggregate)]
@@ -56,11 +52,10 @@ impl Decide<Add> for Counter {
     }
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = OtherId, events(Pinged))]
+#[domain::command(target = OtherId, events(Pinged))]
 struct Ping;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Pinged;
 
 #[derive(Aggregate)]

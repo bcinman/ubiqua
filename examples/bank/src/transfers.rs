@@ -3,19 +3,18 @@
 //! records the request and how it ended; a policy starts the saga when one is requested.
 
 use crate::*;
-use domain::{Aggregate, Command, Cx, Decide, Decision, Event, Evolve, Policy, Rejection, Saga};
+use domain::{Aggregate, Cx, Decide, Decision, Evolve, Policy, Saga};
 use domain_memory::{PolicyCx, PolicyError, React, Run, SagaCx};
 use serde::{Deserialize, Serialize};
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = TransferId, events(TransferRequested), rejects(AlreadyRequested))]
+#[domain::command(target = TransferId, events(TransferRequested), rejects(AlreadyRequested))]
 pub struct RequestTransfer {
     pub from: AccountId,
     pub to: AccountId,
     pub amount: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct TransferRequested {
     pub from: AccountId,
     pub to: AccountId,
@@ -24,25 +23,23 @@ pub struct TransferRequested {
     pub by: Option<String>,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct AlreadyRequested;
 
 // How it ended. The saga sends these; they never reject.
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = TransferId, events(TransferCompleted))]
+#[domain::command(target = TransferId, events(TransferCompleted))]
 pub struct CompleteTransfer;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct TransferCompleted;
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = TransferId, events(TransferFailed))]
+#[domain::command(target = TransferId, events(TransferFailed))]
 pub struct FailTransfer {
     pub reason: String,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct TransferFailed {
     pub reason: String,
 }
@@ -119,7 +116,7 @@ impl React for TransferExecution {
 }
 
 /// The destination account can't take the money.
-#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::rejection]
 pub struct DestinationClosed;
 
 /// Carries out one transfer.

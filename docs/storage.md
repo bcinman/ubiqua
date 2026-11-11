@@ -77,7 +77,7 @@ Change its version. See [Views](views.md#change-a-view).
 Events are kept forever, so old ones must still decode:
 
 ```rust
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 pub struct MoneyDeposited {
     pub amount: u64,
     pub balance_after: u64,

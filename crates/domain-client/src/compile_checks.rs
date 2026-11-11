@@ -9,7 +9,7 @@
 //! # domain::id!(pub struct DoorId;);
 //! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Moved))] pub struct Open;
 //! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Moved))] pub struct Close;
-//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Moved;
+//! # #[domain::event] pub struct Moved;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Moved), commands(Open, Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
 //! # impl Decide<Open> for Door { fn decide(_: &(), _: &Open, _: &Cx) -> Decision<Open> { Ok(vec![]) } fn reply(_: &()) {} }
@@ -29,13 +29,12 @@
 //! ```compile_fail,E0277
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
-//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
-//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
+//! # #[domain::event] pub struct Closed;
+//! # #[domain::rejection] pub struct Jammed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
 //! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &()) {} }
-//! #[derive(Command, Debug, serde::Serialize, serde::Deserialize)]
-//! #[command(target = DoorId, events(Closed), rejects(Jammed))]
+//! #[domain::command(target = DoorId, events(Closed), rejects(Jammed))]
 //! pub struct Close;
 //!
 //! let memory = domain_memory::Memory::new();

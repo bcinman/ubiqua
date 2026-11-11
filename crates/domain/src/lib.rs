@@ -32,7 +32,8 @@ pub mod __private {
 pub use actor::{CurrentActor, ReadCx};
 pub use api::{Api, ApiRegistry, Reads, Sends, SentVia};
 pub use domain_macros::{
-    Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Projection, Rejection, Saga, View,
+    Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Projection, Rejection, Saga, View, command,
+    event, rejection,
 };
 pub use external::{Adapter, Answer, Answered, Call, CallError, Calls, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};

@@ -13,6 +13,72 @@ use syn::{DeriveInput, Ident, Path, Token, Type, Visibility, parse_macro_input};
 #[proc_macro_derive(Event)]
 pub fn derive_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    event_impl(&input).into()
+}
+
+/// `impl Rejection`, plus `Display` (its `Debug` form) and `std::error::Error`.
+#[proc_macro_derive(Rejection)]
+pub fn derive_rejection(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    rejection_impl(&input).into()
+}
+
+/// `#[domain::event]`: `#[derive(Event)]` plus the derives `Event` requires: `Clone`, `Debug`,
+/// `PartialEq`, `Serialize` and `Deserialize`.
+#[proc_macro_attribute]
+pub fn event(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, "event", |input, _| Ok(event_impl(input)))
+}
+
+/// `#[domain::rejection]`: `#[derive(Rejection)]` plus the derives `Rejection` requires: `Clone`,
+/// `Debug`, `PartialEq`, `Serialize` and `Deserialize`.
+#[proc_macro_attribute]
+pub fn rejection(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, "rejection", |input, _| Ok(rejection_impl(input)))
+}
+
+/// `#[domain::command(target = Id, events(..), rejects(..), reply = Type)]`: `#[derive(Command)]`
+/// with those arguments, plus the derives `Command` requires: `Debug`, `Serialize` and
+/// `Deserialize`.
+#[proc_macro_attribute]
+pub fn command(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, "command", |input, args| {
+        let mut input = input.clone();
+        input.attrs.push(syn::parse_quote!(#[command(#args)]));
+        command_impl(&input)
+    })
+}
+
+/// Expands an attribute form: the item with the std and serde derives its trait needs, then what
+/// the derive would generate. It doesn't emit the derive itself, so a `#[command(..)]` helper
+/// can't clash with the `command` attribute when both are in scope.
+fn declaration(
+    args: TokenStream,
+    item: TokenStream,
+    kind: &str,
+    generate: impl FnOnce(&DeriveInput, Tokens) -> syn::Result<Tokens>,
+) -> TokenStream {
+    let args = Tokens::from(args);
+    let input = parse_macro_input!(item as DeriveInput);
+    if kind != "command" && !args.is_empty() {
+        let message = format!("`#[domain::{kind}]` takes no arguments");
+        return syn::Error::new_spanned(args, message).into_compile_error().into();
+    }
+    let derives = match kind {
+        "command" => quote!(::std::fmt::Debug),
+        _ => quote!(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq),
+    };
+    let generated = generate(&input, args).unwrap_or_else(syn::Error::into_compile_error);
+    quote! {
+        #[derive(#derives, ::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
+        #[serde(crate = "::domain::__private::serde")]
+        #input
+        #generated
+    }
+    .into()
+}
+
+fn event_impl(input: &DeriveInput) -> Tokens {
     let name = &input.ident;
     let tag = name.to_string();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -21,13 +87,9 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             const NAME: &'static str = #tag;
         }
     }
-    .into()
 }
 
-/// `impl Rejection`, plus `Display` (its `Debug` form) and `std::error::Error`.
-#[proc_macro_derive(Rejection)]
-pub fn derive_rejection(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+fn rejection_impl(input: &DeriveInput) -> Tokens {
     let name = &input.ident;
     let tag = name.to_string();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -44,7 +106,6 @@ pub fn derive_rejection(input: TokenStream) -> TokenStream {
 
         impl #impl_generics ::std::error::Error for #name #ty_generics #where_clause {}
     }
-    .into()
 }
 
 /// `#[command(target = Id, events(..), rejects(..), reply = Type)]`
@@ -54,7 +115,7 @@ pub fn derive_rejection(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Command, attributes(command))]
 pub fn derive_command(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    command(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    command_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 /// `#[aggregate(id = Id, state = State, events(..), commands(..))]`
@@ -67,7 +128,7 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
     aggregate(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn command(input: &DeriveInput) -> syn::Result<Tokens> {
+fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut target, mut events, mut rejects, mut reply) = (None, Vec::new(), Vec::new(), None);
     parse_attr(input, "command", |meta| {

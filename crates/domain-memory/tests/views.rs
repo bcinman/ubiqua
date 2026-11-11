@@ -1,6 +1,5 @@
 use domain::{
-    Aggregate, Apply, Command, Cursor, Cx, Decide, Decision, Event, Evolve, Frame, KeyOf, Model, Origin, Timestamp,
-    View, ViewCx,
+    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Frame, KeyOf, Model, Origin, Timestamp, View, ViewCx,
 };
 use domain_memory::Memory;
 use serde::{Deserialize, Serialize};
@@ -21,25 +20,23 @@ domain::id!(
     struct OwnerId;
 );
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = WalletId, events(Credited))]
+#[domain::command(target = WalletId, events(Credited))]
 struct Credit {
     owner: String,
     amount: u64,
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = WalletId, events(Noted))]
+#[domain::command(target = WalletId, events(Noted))]
 struct Note;
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Credited {
     owner: String,
     amount: u64,
     total_after: u64,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Noted;
 
 #[derive(Aggregate)]
@@ -68,13 +65,12 @@ impl Decide<Note> for Wallet {
     fn reply(_: &u64) {}
 }
 
-#[derive(Command, Debug, Serialize, Deserialize)]
-#[command(target = ClubId, events(Joined))]
+#[domain::command(target = ClubId, events(Joined))]
 struct Join {
     member: String,
 }
 
-#[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[domain::event]
 struct Joined {
     member: String,
 }

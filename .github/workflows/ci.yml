@@ -14,6 +14,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      # Each benchmark once, with its setup checks, so a bench that breaks fails here.
+      - run: cargo test -p bank --benches --locked
 
   lint:
     runs-on: ubuntu-latest

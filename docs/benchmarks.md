@@ -9,6 +9,7 @@ cargo bench -p bank -- send/deposit                  # benchmarks whose name con
 cargo bench -p bank -- --quick                       # a rough pass in under a minute
 cargo bench -p bank -- --save-baseline main          # record a baseline, say on main
 cargo bench -p bank -- --baseline main               # compare this branch against it
+cargo test -p bank --benches                         # run each benchmark once, as CI does
 ```
 
 `commands`, `views` and `storage` host only the bank's three views, so "with views" measures them and nothing else. `workflows` and `client` run the whole `Bank` model, policies and saga included, as the app does. Every command is decided at a fixed time. Each sample starts from a fresh bank every 10,000 commands (1,000 with SQLite or sagas), so memory stays bounded and samples see the same history sizes. Compare numbers from the same machine only, and close other work while they run. On a shared cloud VM, two runs of the same code can differ by 5 to 35%, so criterion reports changes that aren't there; compare there with `-- --baseline main --noise-threshold 0.1`, or use a quiet dedicated machine.

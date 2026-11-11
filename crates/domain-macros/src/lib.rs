@@ -27,14 +27,16 @@ pub fn derive_rejection(input: TokenStream) -> TokenStream {
 /// `PartialEq`, `Serialize` and `Deserialize`.
 #[proc_macro_attribute]
 pub fn event(args: TokenStream, item: TokenStream) -> TokenStream {
-    declaration(args, item, "event", |input, _| Ok(event_impl(input)))
+    let required = requires(quote!(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq,), true);
+    declaration(args, item, None, required, |input| Ok(event_impl(input)))
 }
 
 /// `#[domain::rejection]`: `#[derive(Rejection)]` plus the derives `Rejection` requires: `Clone`,
 /// `Debug`, `PartialEq`, `Serialize` and `Deserialize`.
 #[proc_macro_attribute]
 pub fn rejection(args: TokenStream, item: TokenStream) -> TokenStream {
-    declaration(args, item, "rejection", |input, _| Ok(rejection_impl(input)))
+    let required = requires(quote!(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq,), true);
+    declaration(args, item, None, required, |input| Ok(rejection_impl(input)))
 }
 
 /// `#[domain::command(target = Id, events(..), rejects(..), reply = Type)]`: `#[derive(Command)]`
@@ -42,36 +44,107 @@ pub fn rejection(args: TokenStream, item: TokenStream) -> TokenStream {
 /// `Deserialize`.
 #[proc_macro_attribute]
 pub fn command(args: TokenStream, item: TokenStream) -> TokenStream {
-    declaration(args, item, "command", |input, args| {
-        let mut input = input.clone();
-        input.attrs.push(syn::parse_quote!(#[command(#args)]));
-        command_impl(&input)
-    })
+    declaration(args, item, Some("command"), requires(quote!(::std::fmt::Debug,), true), command_impl)
 }
 
-/// Expands an attribute form: the item with the std and serde derives its trait needs, then what
-/// the derive would generate. It doesn't emit the derive itself, so a `#[command(..)]` helper
-/// can't clash with the `command` attribute when both are in scope.
+/// `#[domain::aggregate(id = Id, state = State, events(..), commands(..))]`: `#[derive(Aggregate)]`
+/// with those arguments.
+#[proc_macro_attribute]
+pub fn aggregate(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("aggregate"), quote!(), aggregate_impl)
+}
+
+/// `#[domain::view(key = Key, from(..), ..)]`: `#[derive(View)]` with those arguments.
+#[proc_macro_attribute]
+pub fn view(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("view"), quote!(), view_impl)
+}
+
+/// `#[domain::policy(from(..))]`: `#[derive(Policy)]` with those arguments.
+#[proc_macro_attribute]
+pub fn policy(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("policy"), quote!(), policy_impl)
+}
+
+/// `#[domain::projection(key = Key, from(..), ..)]`: `#[derive(Projection)]` with those arguments.
+#[proc_macro_attribute]
+pub fn projection(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("projection"), quote!(), projection_impl)
+}
+
+/// `#[domain::saga(key = Key, rejects(..), sends(..))]`: `#[derive(Saga)]` with those arguments,
+/// plus the derives `Saga` requires: `Serialize` and `Deserialize`.
+#[proc_macro_attribute]
+pub fn saga(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("saga"), requires(quote!(), true), saga_impl)
+}
+
+/// `#[domain::call(system = System, returns = Type, errors(..))]`: `#[derive(Call)]` with those
+/// arguments, plus the derives `Call` requires: `Debug` and `PartialEq`.
+#[proc_macro_attribute]
+pub fn call(args: TokenStream, item: TokenStream) -> TokenStream {
+    let required = requires(quote!(::std::fmt::Debug, ::std::cmp::PartialEq,), false);
+    declaration(args, item, Some("call"), required, call_impl)
+}
+
+/// `#[domain::external_system(calls(..))]`: `#[derive(ExternalSystem)]` with those arguments.
+#[proc_macro_attribute]
+pub fn external_system(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("external_system"), quote!(), external_system_impl)
+}
+
+/// `#[domain::model(aggregates(..), views(..), policies(..), sagas(..))]`: `#[derive(Model)]` with
+/// those arguments.
+#[proc_macro_attribute]
+pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("model"), quote!(), model_impl)
+}
+
+/// `#[domain::api(commands(..), views(..))]`: `#[derive(Api)]` with those arguments.
+#[proc_macro_attribute]
+pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
+    declaration(args, item, Some("api"), quote!(), api_impl)
+}
+
+/// The `#[derive(..)]` an attribute form adds: the std traits listed, each followed by a comma,
+/// and serde's when `serde` is set.
+fn requires(std: Tokens, serde: bool) -> Tokens {
+    if serde {
+        quote! {
+            #[derive(#std ::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
+            #[serde(crate = "::domain::__private::serde")]
+        }
+    } else {
+        quote!(#[derive(#std)])
+    }
+}
+
+/// Expands an attribute form: the item with the derives its trait needs, then what the derive
+/// would generate, reading the attribute's arguments as the derive's helper attribute `helper`.
+/// It emits neither the derive nor the helper, so a `#[view(..)]` helper can't clash with the
+/// `view` attribute when both are in scope. Without a helper, the attribute takes no arguments.
 fn declaration(
     args: TokenStream,
     item: TokenStream,
-    kind: &str,
-    generate: impl FnOnce(&DeriveInput, Tokens) -> syn::Result<Tokens>,
+    helper: Option<&str>,
+    required: Tokens,
+    generate: fn(&DeriveInput) -> syn::Result<Tokens>,
 ) -> TokenStream {
     let args = Tokens::from(args);
     let input = parse_macro_input!(item as DeriveInput);
-    if kind != "command" && !args.is_empty() {
-        let message = format!("`#[domain::{kind}]` takes no arguments");
-        return syn::Error::new_spanned(args, message).into_compile_error().into();
-    }
-    let derives = match kind {
-        "command" => quote!(::std::fmt::Debug),
-        _ => quote!(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq),
+    let generated = match helper {
+        Some(helper) => {
+            let helper = Ident::new(helper, proc_macro2::Span::call_site());
+            let mut with_args = input.clone();
+            with_args.attrs.push(syn::parse_quote!(#[#helper(#args)]));
+            generate(&with_args)
+        }
+        None if args.is_empty() => generate(&input),
+        None => Err(syn::Error::new_spanned(&args, "this attribute takes no arguments")),
     };
-    let generated = generate(&input, args).unwrap_or_else(syn::Error::into_compile_error);
+    let generated = generated.unwrap_or_else(syn::Error::into_compile_error);
     quote! {
-        #[derive(#derives, ::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
-        #[serde(crate = "::domain::__private::serde")]
+        #required
         #input
         #generated
     }
@@ -125,7 +198,7 @@ pub fn derive_command(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Aggregate, attributes(aggregate))]
 pub fn derive_aggregate(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    aggregate(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    aggregate_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
@@ -145,8 +218,8 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let target =
-        target.ok_or_else(|| syn::Error::new_spanned(name, "a command needs `#[command(target = SomeId, ..)]`"))?;
+    let target = target
+        .ok_or_else(|| syn::Error::new_spanned(name, "a command needs `#[domain::command(target = SomeId, ..)]`"))?;
     let reply_type = reply.as_ref().map_or_else(|| quote!(()), |t| quote!(#t));
     let tag = name.to_string();
     let event_enum = format_ident!("{}Event", name);
@@ -206,7 +279,7 @@ fn command_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
+fn aggregate_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut id, mut state, mut events, mut commands) = (None, None, Vec::new(), Vec::new());
     parse_attr(input, "aggregate", |meta| {
@@ -223,8 +296,9 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let missing =
-        |what: &str| syn::Error::new_spanned(name, format!("an aggregate needs `#[aggregate({what} = .., ..)]`"));
+    let missing = |what: &str| {
+        syn::Error::new_spanned(name, format!("an aggregate needs `#[domain::aggregate({what} = .., ..)]`"))
+    };
     let id = id.ok_or_else(|| missing("id"))?;
     let state = state.ok_or_else(|| missing("state"))?;
     if !input.generics.params.is_empty() {
@@ -284,7 +358,7 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
 #[proc_macro_derive(View, attributes(view))]
 pub fn derive_view(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    view(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    view_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 /// `#[model(aggregates(..), views(..), policies(..), sagas(..))]`: `impl Model`, registering each
@@ -292,7 +366,7 @@ pub fn derive_view(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    model(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    model_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 /// `#[api(commands(..), views(..))]`: `impl Api`, registering each one listed, plus `Sends` and
@@ -300,10 +374,10 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Api, attributes(api))]
 pub fn derive_api(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    api(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    api_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn api(input: &DeriveInput) -> syn::Result<Tokens> {
+fn api_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut commands, mut views) = (Vec::new(), Vec::new());
     parse_attr(input, "api", |meta| {
@@ -331,7 +405,7 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-fn view(input: &DeriveInput) -> syn::Result<Tokens> {
+fn view_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());
     let (mut version, mut rejects, mut predicts) = (None, Vec::new(), Vec::new());
@@ -359,9 +433,9 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a view needs `#[view(key = .., ..)]`"))?;
+    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a view needs `#[domain::view(key = .., ..)]`"))?;
     if sources.is_empty() {
-        return Err(syn::Error::new_spanned(name, "a view needs `#[view(from(Source(Event, ..)), ..)]`"));
+        return Err(syn::Error::new_spanned(name, "a view needs `#[domain::view(from(Source(Event, ..)), ..)]`"));
     }
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(&input.generics, "a view can't be generic"));
@@ -469,10 +543,10 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
 #[proc_macro_derive(Projection, attributes(projection))]
 pub fn derive_projection(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    projection(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    projection_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn projection(input: &DeriveInput) -> syn::Result<Tokens> {
+fn projection_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut sources, mut key_of, mut version) = (None, Vec::new(), Vec::new(), None);
     parse_attr(input, "projection", |meta| {
@@ -489,9 +563,13 @@ fn projection(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a projection needs `#[projection(key = .., ..)]`"))?;
+    let key =
+        key.ok_or_else(|| syn::Error::new_spanned(name, "a projection needs `#[domain::projection(key = .., ..)]`"))?;
     if sources.is_empty() {
-        return Err(syn::Error::new_spanned(name, "a projection needs `#[projection(from(Source(Event, ..)), ..)]`"));
+        return Err(syn::Error::new_spanned(
+            name,
+            "a projection needs `#[domain::projection(from(Source(Event, ..)), ..)]`",
+        ));
     }
     for path in &key_of {
         if !sources.iter().any(|(source, _)| last_ident(source) == last_ident(path)) {
@@ -527,10 +605,10 @@ fn projection(input: &DeriveInput) -> syn::Result<Tokens> {
 #[proc_macro_derive(Saga, attributes(saga))]
 pub fn derive_saga(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    saga(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    saga_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn saga(input: &DeriveInput) -> syn::Result<Tokens> {
+fn saga_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut rejects, mut sends) = (None, Vec::new(), Vec::new());
     parse_attr(input, "saga", |meta| {
@@ -545,7 +623,7 @@ fn saga(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a saga needs `#[saga(key = .., ..)]`"))?;
+    let key = key.ok_or_else(|| syn::Error::new_spanned(name, "a saga needs `#[domain::saga(key = .., ..)]`"))?;
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(&input.generics, "a saga can't be generic"));
     }
@@ -578,10 +656,10 @@ fn saga(input: &DeriveInput) -> syn::Result<Tokens> {
 #[proc_macro_derive(Policy, attributes(policy))]
 pub fn derive_policy(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    policy(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    policy_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
+fn policy_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let mut sources = Vec::new();
     parse_attr(input, "policy", |meta| {
@@ -593,7 +671,7 @@ fn policy(input: &DeriveInput) -> syn::Result<Tokens> {
         }
     })?;
     if sources.is_empty() {
-        return Err(syn::Error::new_spanned(name, "a policy needs `#[policy(from(Source(Event, ..)))]`"));
+        return Err(syn::Error::new_spanned(name, "a policy needs `#[domain::policy(from(Source(Event, ..)))]`"));
     }
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(&input.generics, "a policy can't be generic"));
@@ -650,10 +728,10 @@ fn one_source(name: &Ident, sources: &[(Path, Vec<Path>)]) -> Option<Tokens> {
 #[proc_macro_derive(Call, attributes(call))]
 pub fn derive_call(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    call(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    call_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn call(input: &DeriveInput) -> syn::Result<Tokens> {
+fn call_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut system, mut returns, mut errors) = (None, None, Vec::new());
     parse_attr(input, "call", |meta| {
@@ -668,7 +746,8 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Ok(())
     })?;
-    let system = system.ok_or_else(|| syn::Error::new_spanned(name, "a call needs `#[call(system = .., ..)]`"))?;
+    let system =
+        system.ok_or_else(|| syn::Error::new_spanned(name, "a call needs `#[domain::call(system = .., ..)]`"))?;
     let returns = returns.map_or_else(|| quote!(()), |t| quote!(#t));
     let tag = name.to_string();
     let error_enum = format_ident!("{}Error", name);
@@ -692,10 +771,10 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
 #[proc_macro_derive(ExternalSystem, attributes(external_system))]
 pub fn derive_external_system(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    external_system(&input).unwrap_or_else(syn::Error::into_compile_error).into()
+    external_system_impl(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-fn external_system(input: &DeriveInput) -> syn::Result<Tokens> {
+fn external_system_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let mut calls = Vec::new();
     parse_attr(input, "external_system", |meta| {
@@ -802,7 +881,7 @@ fn pick_input(source: &Path, list: &[Path], input_enum: &Ident) -> Tokens {
     }
 }
 
-fn model(input: &DeriveInput) -> syn::Result<Tokens> {
+fn model_impl(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut aggregates, mut views, mut policies, mut sagas) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     parse_attr(input, "model", |meta| {

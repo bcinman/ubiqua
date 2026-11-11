@@ -34,9 +34,12 @@ pub mod __private {
 
 pub use actor::ReadCx;
 pub use api::{Api, Reads, Sends};
+/// The written-out forms of the attributes that add no derives of their own. Use the attributes.
+#[doc(hidden)]
+pub use domain_macros::{Aggregate, Api, ExternalSystem, Model, Policy, Projection, View};
 pub use domain_macros::{
-    Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Projection, Rejection, Saga, View, command,
-    event, rejection,
+    Call, Command, Event, Rejection, Saga, aggregate, api, call, command, event, external_system, model, policy,
+    projection, rejection, saga, view,
 };
 pub use external::{Answer, Answered, Call, CallError, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};
@@ -48,8 +51,8 @@ pub use view::{
     View, ViewCx,
 };
 
-/// What a model's code uses: `use domain::prelude::*;`. The attributes `#[domain::event]`,
-/// `#[domain::rejection]` and `#[domain::command(..)]` are left out; write them with the path.
+/// What a model's code uses: `use domain::prelude::*;`. The attributes, such as `#[domain::event]`
+/// and `#[domain::view(..)]`, are left out; write them with the path.
 pub mod prelude {
     pub use crate::{
         Aggregate, Answer, Answered, Api, Apply, Call, CallError, Command, Cx, Decide, Decision, Event, Evolve,
@@ -58,13 +61,13 @@ pub mod prelude {
     };
 }
 
-/// A fact a command recorded. Derive it with `#[derive(Event)]`.
+/// A fact a command recorded. Declare it with `#[domain::event]`.
 /// It's stored, so it also serializes.
 pub trait Event: Clone + Debug + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static {
     const NAME: &'static str;
 }
 
-/// A reason a command or a read was refused. Derive it with `#[derive(Rejection)]`.
+/// A reason a command or a read was refused. Declare it with `#[domain::rejection]`.
 /// It serializes, so a client across a network gets it by name.
 pub trait Rejection:
     Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + 'static
@@ -78,7 +81,7 @@ pub trait Events: Clone + Debug + PartialEq + Serialize + DeserializeOwned + May
     fn name(&self) -> &'static str;
 }
 
-/// A set of rejections, as an enum with one variant per rejection. `#[derive(Command)]` generates these.
+/// A set of rejections, as an enum with one variant per rejection. `#[domain::command(..)]` generates these.
 pub trait Rejections:
     Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + 'static
 {
@@ -134,7 +137,7 @@ tuple_events!(A, B, C, D, F, G, H, I, J, K, L);
 tuple_events!(A, B, C, D, F, G, H, I, J, K, L, M);
 
 /// The id of one aggregate instance. Each id type belongs to exactly one aggregate, so a command's
-/// target names the aggregate that decides it. `#[derive(Aggregate)]` implements it.
+/// target names the aggregate that decides it. `#[domain::aggregate(..)]` implements it.
 pub trait AggregateId:
     Clone + Eq + Hash + Debug + Display + Serialize + DeserializeOwned + MaybeSend + 'static
 {
@@ -142,7 +145,7 @@ pub trait AggregateId:
 }
 
 /// A consistency boundary: one instance per id, deciding one command at a time.
-/// Derive it with `#[derive(Aggregate)]`, then implement [`Evolve`] and one [`Decide`] per command.
+/// Declare it with `#[domain::aggregate(..)]`, then implement [`Evolve`] and one [`Decide`] per command.
 pub trait Aggregate: Sized + 'static {
     const NAME: &'static str;
     type Id: AggregateId<Aggregate = Self>;
@@ -150,7 +153,7 @@ pub trait Aggregate: Sized + 'static {
     type State: Clone + Debug + Default + 'static;
     type Event: Events;
 
-    /// Registers each command it decides. `#[derive(Aggregate)]` implements it.
+    /// Registers each command it decides. `#[domain::aggregate(..)]` implements it.
     #[doc(hidden)]
     fn register_commands<R: Registry>(_registry: &mut R) {}
 }
@@ -161,7 +164,7 @@ pub trait Evolve: Aggregate {
     fn evolve(state: &mut Self::State, event: &Self::Event);
 }
 
-/// A request for a change to one aggregate instance. Derive it with `#[derive(Command)]`.
+/// A request for a change to one aggregate instance. Declare it with `#[domain::command(..)]`.
 /// It serializes, so it can be scheduled for later.
 pub trait Command: Debug + Serialize + DeserializeOwned + MaybeSend + 'static {
     const NAME: &'static str;
@@ -176,7 +179,7 @@ pub trait Command: Debug + Serialize + DeserializeOwned + MaybeSend + 'static {
 }
 
 /// A command that declares no rejections, so it can run when nobody waits for its answer, as a
-/// scheduled command does. `#[derive(Command)]` implements it when `rejects(..)` is empty.
+/// scheduled command does. `#[domain::command(..)]` implements it when `rejects(..)` is empty.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` can be rejected, so it can't be scheduled",
     label = "a scheduled command reports a fact: remove its `rejects(..)` and record nothing when it no longer applies"
@@ -193,7 +196,7 @@ pub trait Decide<C: Command>: Evolve {
 }
 
 /// What a command returns to its caller, computed from the aggregate's state after its events
-/// are applied. Implement it for a command with `reply = ..`; `#[derive(Command)]` implements it
+/// are applied. Implement it for a command with `reply = ..`; `#[domain::command(..)]` implements it
 /// for every aggregate when the command declares no reply.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` declares a reply but has no `impl Reply<{A}>`",

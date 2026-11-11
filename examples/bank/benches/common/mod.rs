@@ -29,8 +29,7 @@ pub fn memory() -> Memory {
 }
 
 /// The bank's views without its policies and saga, so a benchmark "with views" measures only them.
-#[derive(domain::Model)]
-#[model(aggregates(Account, Transfer), views(AccountSummary, OwnerHoldings, Statement))]
+#[domain::model(aggregates(Account, Transfer), views(AccountSummary, OwnerHoldings, Statement))]
 pub struct BankViews;
 
 /// The whole bank as the app runs it: views, policies and the transfer saga, with a fraud

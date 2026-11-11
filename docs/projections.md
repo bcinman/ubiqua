@@ -10,8 +10,7 @@ events ──▶ projection ──▶ your store
 From [`examples/bank/src/ledger.rs`](../examples/bank/src/ledger.rs):
 
 ```rust
-#[derive(Projection)]
-#[projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
+#[domain::projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
 pub struct Ledger {
     pub store: LedgerStore,
 }
@@ -41,7 +40,7 @@ let bank = Memory::new().with::<Bank>().projection(Ledger { store });
 Like a view: a key, the events it reads, and `key_of(..)` to route them. No state.
 
 ```rust
-#[projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
+#[domain::projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
 pub struct Ledger { .. }
 
 // generated:
@@ -99,7 +98,7 @@ kim-main  ✓ ✓ ✓
 | a new `version` | all of history again |
 
 ```rust
-#[projection(key = AccountId, from(..), version = 2)]    // rebuild your store from scratch
+#[domain::projection(key = AccountId, from(..), version = 2)]    // rebuild your store from scratch
 ```
 
 Unlike a [policy](policies.md), a projection never sends commands, so replaying history is safe.

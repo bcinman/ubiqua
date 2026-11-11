@@ -13,8 +13,7 @@ reconnected          balance 170          confirmed, the same 100, counted once
 List the commands a view predicts, and say how each would change it. From [`examples/bank/src/views.rs`](../examples/bank/src/views.rs):
 
 ```rust
-#[derive(View)]
-#[view(
+#[domain::view(
     key = AccountId,
     from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     state = Summary,

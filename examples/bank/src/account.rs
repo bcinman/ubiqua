@@ -1,8 +1,7 @@
 use crate::*;
 use domain::prelude::*;
 
-#[derive(Aggregate)]
-#[aggregate(
+#[domain::aggregate(
     id = AccountId,
     state = AccountState,
     events(AccountOpened, MoneyDeposited, MoneyWithdrawn, AccountFrozen, AccountThawed),

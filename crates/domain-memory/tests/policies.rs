@@ -1,7 +1,4 @@
-use domain::{
-    Aggregate, Answer, Answered, Call, CommandId, Cx, Decide, Decision, Evolve, ExternalSystem, Model, Policy,
-    StreamId, Timestamp,
-};
+use domain::{Answer, Answered, CommandId, Cx, Decide, Decision, Evolve, StreamId, Timestamp};
 use domain_memory::{Memory, PolicyCx, PolicyError, React, ScheduleError, UnscheduleError};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -25,8 +22,7 @@ pub struct Bumped;
 #[domain::event]
 pub struct Pinged;
 
-#[derive(Aggregate)]
-#[aggregate(id = CounterId, state = (), events(Bumped, Pinged), commands(Bump, Ping))]
+#[domain::aggregate(id = CounterId, state = (), events(Bumped, Pinged), commands(Bump, Ping))]
 pub struct Counter;
 
 impl Evolve for Counter {
@@ -45,17 +41,15 @@ impl Decide<Ping> for Counter {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Counter))]
+#[domain::model(aggregates(Counter))]
 pub struct Counting;
 
-#[derive(Model)]
-#[model(aggregates(Counter), policies(Echo))]
+#[domain::model(aggregates(Counter), policies(Echo))]
 pub struct Echoing;
 
 /// Pings, then fails while `failures` is above zero.
-#[derive(Policy, Default)]
-#[policy(from(Counter(Bumped)))]
+#[domain::policy(from(Counter(Bumped)))]
+#[derive(Default)]
 pub struct Echo {
     failures: AtomicU32,
 }
@@ -75,14 +69,12 @@ impl React for Echo {
 
 // A lookup service: pings only when it says so.
 
-#[derive(Call, Debug, PartialEq)]
-#[call(system = Lookup, returns = bool)]
+#[domain::call(system = Lookup, returns = bool)]
 pub struct ShouldPing {
     counter: CounterId,
 }
 
-#[derive(ExternalSystem)]
-#[external_system(calls(ShouldPing))]
+#[domain::external_system(calls(ShouldPing))]
 pub struct Lookup;
 
 pub struct Always;
@@ -93,8 +85,7 @@ impl Answer<ShouldPing> for Always {
     }
 }
 
-#[derive(Policy)]
-#[policy(from(Counter(Bumped)))]
+#[domain::policy(from(Counter(Bumped)))]
 pub struct AskFirst;
 
 impl React for AskFirst {
@@ -218,8 +209,7 @@ pub struct Signed {
     by: Option<String>,
 }
 
-#[derive(Aggregate)]
-#[aggregate(id = SheetId, state = (), events(Signed), commands(Sign))]
+#[domain::aggregate(id = SheetId, state = (), events(Signed), commands(Sign))]
 pub struct Sheet;
 
 impl Evolve for Sheet {
@@ -232,8 +222,7 @@ impl Decide<Sign> for Sheet {
     }
 }
 
-#[derive(Policy)]
-#[policy(from(Sheet(Signed)))]
+#[domain::policy(from(Sheet(Signed)))]
 pub struct Countersign;
 
 impl React for Countersign {

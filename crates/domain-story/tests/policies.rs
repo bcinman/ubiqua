@@ -1,4 +1,4 @@
-use domain::{Aggregate, Call, Cx, Decide, Decision, Evolve, ExternalSystem, Policy, Timestamp};
+use domain::{Cx, Decide, Decision, Evolve, Timestamp};
 use domain_memory::{PolicyCx, PolicyError, React};
 use domain_story::Story;
 use std::time::Duration;
@@ -19,8 +19,7 @@ pub struct Register;
 #[domain::event]
 pub struct CustomerRegistered;
 
-#[derive(Aggregate)]
-#[aggregate(id = CustomerId, state = (), events(CustomerRegistered), commands(Register))]
+#[domain::aggregate(id = CustomerId, state = (), events(CustomerRegistered), commands(Register))]
 pub struct Customer;
 
 impl Evolve for Customer {
@@ -75,8 +74,7 @@ pub struct AccountState {
     frozen: bool,
 }
 
-#[derive(Aggregate)]
-#[aggregate(
+#[domain::aggregate(
     id = AccountId,
     state = AccountState,
     events(AccountOpened, Withdrawn, Frozen, Thawed),
@@ -124,8 +122,8 @@ impl Decide<Thaw> for Account {
 
 // The fraud scorer, in the model's words.
 
-#[derive(Call, Clone, Debug, PartialEq)]
-#[call(system = FraudCheck, returns = Risk, errors(Blocked))]
+#[domain::call(system = FraudCheck, returns = Risk, errors(Blocked))]
+#[derive(Clone)]
 pub struct Score {
     account: AccountId,
     amount: u64,
@@ -137,14 +135,12 @@ pub struct Risk(u32);
 #[domain::rejection]
 pub struct Blocked;
 
-#[derive(ExternalSystem)]
-#[external_system(calls(Score))]
+#[domain::external_system(calls(Score))]
 pub struct FraudCheck;
 
 // Policies.
 
-#[derive(Policy)]
-#[policy(from(Customer(CustomerRegistered)))]
+#[domain::policy(from(Customer(CustomerRegistered)))]
 pub struct MainAccount;
 
 impl React for MainAccount {
@@ -160,8 +156,7 @@ impl React for MainAccount {
 
 pub const FREEZE_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
-#[derive(Policy)]
-#[policy(from(Account(Withdrawn)))]
+#[domain::policy(from(Account(Withdrawn)))]
 pub struct FraudReview;
 
 impl React for FraudReview {

@@ -5,8 +5,7 @@ use std::collections::BTreeMap;
 
 /// Who owns an account and what's in it. Only its owner may read it. A deposit or withdrawal
 /// shows as soon as it's sent.
-#[derive(View)]
-#[view(
+#[domain::view(
     key = AccountId,
     from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     state = Summary,
@@ -56,8 +55,7 @@ impl Apply for AccountSummary {
 }
 
 /// Every account an owner holds, with its balance. Built from the summaries, which know the owner.
-#[derive(View)]
-#[view(
+#[domain::view(
     key = OwnerId,
     from(AccountSummary(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     key_of(AccountSummary),
@@ -98,8 +96,7 @@ impl Apply for OwnerHoldings {
 }
 
 /// One line per movement of money. Only the account's owner may read it, so it keeps the owner.
-#[derive(View)]
-#[view(
+#[domain::view(
     key = AccountId,
     from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     state = Option<String>,

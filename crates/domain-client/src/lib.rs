@@ -157,7 +157,7 @@ impl<A: Api> Client<A> {
         }
     }
 
-    /// Sends a command. Live views of views that predict it (`#[view(predicts(..))]`) show its
+    /// Sends a command. Live views of views that predict it (`#[domain::view(predicts(..))]`) show its
     /// change at once, until the answer arrives. Retrying after [`SendError::Unavailable`] with
     /// [`send_with_id`](Self::send_with_id) and the same id takes effect at most once.
     pub fn send<C>(&self, id: &C::Target, command: C) -> Pending<Sent<C>>

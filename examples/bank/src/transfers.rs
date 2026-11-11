@@ -5,7 +5,6 @@
 use crate::*;
 use domain::prelude::*;
 use domain_memory::prelude::*;
-use serde::{Deserialize, Serialize};
 
 #[domain::command(target = TransferId, events(TransferRequested), rejects(AlreadyRequested))]
 pub struct RequestTransfer {
@@ -52,8 +51,7 @@ pub enum TransferState {
     Ended,
 }
 
-#[derive(Aggregate)]
-#[aggregate(
+#[domain::aggregate(
     id = TransferId,
     state = TransferState,
     events(TransferRequested, TransferCompleted, TransferFailed),
@@ -94,8 +92,8 @@ impl Decide<FailTransfer> for Transfer {
 }
 
 /// Starts a transfer's saga once it's requested. Nobody waits for it.
-#[derive(Policy, Default)]
-#[policy(from(Transfer(TransferRequested)))]
+#[domain::policy(from(Transfer(TransferRequested)))]
+#[derive(Default)]
 pub struct TransferExecution;
 
 impl React for TransferExecution {
@@ -114,8 +112,7 @@ impl React for TransferExecution {
 pub struct DestinationClosed;
 
 /// Carries out one transfer.
-#[derive(Saga, Debug, Serialize, Deserialize)]
-#[saga(
+#[domain::saga(
     key = TransferId,
     rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed),
     sends(WithdrawMoney)

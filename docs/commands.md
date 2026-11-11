@@ -14,7 +14,7 @@ pub struct WithdrawMoney {
 }
 ```
 
-The derive generates two enums:
+The attribute generates two enums:
 
 ```rust
 pub enum WithdrawMoneyEvent { MoneyWithdrawn(MoneyWithdrawn) }
@@ -84,7 +84,7 @@ pub struct MoneyWithdrawn { pub amount: u64, pub balance_after: u64 }
 pub struct InsufficientFunds { pub balance: u64, pub requested: u64 }
 ```
 
-Use this form to choose the derives yourself, such as a hand-written `Serialize`.
+Use this form to choose the derives yourself, such as a hand-written `Serialize`. Sagas (`#[derive(Saga, Serialize, Deserialize)]` with `#[saga(..)]`) and calls (`#[derive(Call, Debug, PartialEq)]` with `#[call(..)]`) have one too. The other attributes add no derives, so they have no written-out form to learn.
 
 ## A fact that can't be refused
 

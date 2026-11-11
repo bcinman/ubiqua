@@ -2,7 +2,6 @@
 //! account for a day.
 
 use crate::*;
-use domain::prelude::*;
 use domain_memory::prelude::*;
 use std::time::Duration;
 
@@ -13,8 +12,7 @@ pub const SCORED_FROM: u64 = 500;
 pub const FREEZE_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Asks the fraud scorer how risky a withdrawal is.
-#[derive(Call, Clone, Debug, PartialEq)]
-#[call(system = FraudCheck, returns = Risk)]
+#[domain::call(system = FraudCheck, returns = Risk)]
 pub struct ScoreWithdrawal {
     pub account: AccountId,
     pub amount: u64,
@@ -25,12 +23,11 @@ pub struct ScoreWithdrawal {
 pub struct Risk(pub u8);
 
 /// The fraud-scoring service, in the bank's words. An adapter talks to the vendor.
-#[derive(ExternalSystem)]
-#[external_system(calls(ScoreWithdrawal))]
+#[domain::external_system(calls(ScoreWithdrawal))]
 pub struct FraudCheck;
 
-#[derive(Policy, Default)]
-#[policy(from(Account(MoneyWithdrawn)))]
+#[domain::policy(from(Account(MoneyWithdrawn)))]
+#[derive(Default)]
 pub struct FraudReview;
 
 impl React for FraudReview {

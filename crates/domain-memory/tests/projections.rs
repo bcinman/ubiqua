@@ -1,4 +1,4 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Position, Projection, Timestamp};
+use domain::{Cx, Decide, Decision, Evolve, Position, Timestamp};
 use domain_memory::{Memory, Project, ProjectionError, ProjectionInput};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,8 +14,7 @@ pub struct Bump;
 #[domain::event]
 pub struct Bumped;
 
-#[derive(Aggregate)]
-#[aggregate(id = CounterId, state = (), events(Bumped), commands(Bump))]
+#[domain::aggregate(id = CounterId, state = (), events(Bumped), commands(Bump))]
 pub struct Counter;
 
 impl Evolve for Counter {
@@ -28,13 +27,12 @@ impl Decide<Bump> for Counter {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Counter))]
+#[domain::model(aggregates(Counter))]
 pub struct Counting;
 
 /// Writes `(key, seq)` per input and each batch's size. Fails on key `bad` while `failing`.
-#[derive(Projection, Default)]
-#[projection(key = CounterId, from(Counter(Bumped)))]
+#[domain::projection(key = CounterId, from(Counter(Bumped)))]
+#[derive(Default)]
 pub struct Tally {
     rows: Arc<Mutex<Vec<(String, u64)>>>,
     batches: Arc<Mutex<Vec<usize>>>,

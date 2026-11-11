@@ -16,7 +16,7 @@ impl Decide<DepositMoney> for Account {
 error[E0277]: the trait bound `DepositMoneyEvent: From<MoneyWithdrawn>` is not satisfied
 ```
 
-Fix: add it to `#[command(events(..))]`, or record the right event.
+Fix: add it to `#[domain::command(events(..))]`, or record the right event.
 
 ## A rejection the command doesn't declare
 
@@ -31,7 +31,7 @@ error[E0277]: the trait bound `DepositMoneyRejection: From<InsufficientFunds>` i
 ## A command listed but not decided
 
 ```rust
-#[aggregate(.., commands(Close))]
+#[domain::aggregate(.., commands(Close))]
 pub struct Door;
 // no impl Decide<Close> for Door
 ```
@@ -44,7 +44,7 @@ error[E0277]: `Door` doesn't handle `Close`
 ## A reply nothing computes
 
 ```rust
-#[command(target = DoorId, events(Closed), reply = bool)]
+#[domain::command(target = DoorId, events(Closed), reply = bool)]
 pub struct Close;
 // no impl Reply<Door> for Close
 ```
@@ -56,10 +56,10 @@ error[E0277]: `Close` declares a reply but has no `impl Reply<Door>`
 ## A command's event missing from the aggregate
 
 ```rust
-#[command(target = DoorId, events(Closed))]
+#[domain::command(target = DoorId, events(Closed))]
 pub struct Close;
 
-#[aggregate(id = DoorId, events(Opened), commands(Close))]   // no Closed
+#[domain::aggregate(id = DoorId, events(Opened), commands(Close))]   // no Closed
 pub struct Door;
 ```
 
@@ -86,7 +86,7 @@ error[E0271]: type mismatch resolving `<DepositMoney as Command>::Target == Cust
 ## A view reads an event its source never records
 
 ```rust
-#[view(key = DoorId, from(Door(Opened)))]   // Door records Closed only
+#[domain::view(key = DoorId, from(Door(Opened)))]   // Door records Closed only
 pub struct Log;
 ```
 
@@ -98,10 +98,10 @@ error[E0277]: `Opened` isn't one of the events in `DoorEvent`
 ## A view reads an event its source view doesn't emit
 
 ```rust
-#[view(key = DoorId, from(Door(Closed)))]   // emits Closed only
+#[domain::view(key = DoorId, from(Door(Closed)))]   // emits Closed only
 pub struct Closings;
 
-#[view(key = DoorId, from(Closings(Opened)))]
+#[domain::view(key = DoorId, from(Closings(Opened)))]
 pub struct Log;
 ```
 
@@ -112,7 +112,7 @@ error[E0277]: `Opened` isn't one of the events in `ClosingsInput`
 ## A view keyed by something else, without `key_of`
 
 ```rust
-#[view(key = HouseId, from(Door(Closed)))]
+#[domain::view(key = HouseId, from(Door(Closed)))]
 pub struct Log;
 ```
 
@@ -130,7 +130,7 @@ error[E0277]: `Log` has no `impl Apply`
 ## A view with `rejects(..)` but no `Validate`
 
 ```rust
-#[view(key = DoorId, from(Door(Closed)), rejects(NotYours))]
+#[domain::view(key = DoorId, from(Door(Closed)), rejects(NotYours))]
 pub struct Log;
 // no impl Validate for Log
 ```
@@ -143,7 +143,7 @@ error[E0277]: `Log` declares `rejects(..)` but has no `impl Validate`
 ## A command or view the Api doesn't list
 
 ```rust
-#[api(commands(OpenAccount), views(AccountSummary))]
+#[domain::api(commands(OpenAccount), views(AccountSummary))]
 pub struct BankApi;
 
 client.send(&sam, DepositMoney { amount: 1 });
@@ -152,9 +152,9 @@ client.view::<Statement>();
 
 ```text
 error[E0277]: `BankApi` doesn't let clients send `DepositMoney`
-  add `DepositMoney` to `#[api(commands(..))]`
+  add `DepositMoney` to `#[domain::api(commands(..))]`
 error[E0277]: `BankApi` doesn't let clients read `Statement`
-  add `Statement` to `#[api(views(..))]`
+  add `Statement` to `#[domain::api(views(..))]`
 ```
 
 The `send` check is in [`domain-client`'s `compile_checks.rs`](../crates/domain-client/src/compile_checks.rs).
@@ -162,7 +162,7 @@ The `send` check is in [`domain-client`'s `compile_checks.rs`](../crates/domain-
 ## Scheduling a command that can be rejected
 
 ```rust
-#[command(target = DoorId, events(Closed), rejects(Jammed))]
+#[domain::command(target = DoorId, events(Closed), rejects(Jammed))]
 pub struct Close;
 
 memory.schedule(&front, Close, at, "close-1");
@@ -176,7 +176,7 @@ error[E0277]: `Close` can be rejected, so it can't be scheduled
 ## An adapter that misses a call
 
 ```rust
-#[external_system(calls(Lock, Unlock))]
+#[domain::external_system(calls(Lock, Unlock))]
 pub struct Locks;
 
 impl Answer<Lock> for HalfLocks { .. }     // no Answer<Unlock>
@@ -194,7 +194,7 @@ Both checks are in [`domain-client`'s `compile_checks.rs`](../crates/domain-clie
 ## A prediction with no `Predict`
 
 ```rust
-#[view(key = AccountId, from(Account(..)), state = Summary, predicts(DepositMoney))]
+#[domain::view(key = AccountId, from(Account(..)), state = Summary, predicts(DepositMoney))]
 pub struct AccountSummary;
 // no impl Predict<DepositMoney> for AccountSummary
 ```

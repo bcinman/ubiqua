@@ -12,8 +12,7 @@ TransferRequested ──▶ policy ──▶ saga
 Shortened from [`examples/bank/src/transfers.rs`](../examples/bank/src/transfers.rs):
 
 ```rust
-#[derive(Saga, Debug, Serialize, Deserialize)]
-#[saga(
+#[domain::saga(
     key = TransferId,
     rejects(NotOpen, NotOwner, Frozen, InsufficientFunds, DestinationClosed),
     sends(WithdrawMoney)
@@ -69,8 +68,7 @@ impl React for TransferExecution {
 List both in the model:
 
 ```rust
-#[derive(Model)]
-#[model(aggregates(Account, Transfer), policies(TransferExecution), sagas(ExecuteTransfer))]
+#[domain::model(aggregates(Account, Transfer), policies(TransferExecution), sagas(ExecuteTransfer))]
 pub struct Bank;
 
 let bank = Memory::new().with::<Bank>();
@@ -80,13 +78,13 @@ Without a model, `.saga::<ExecuteTransfer>()` hosts one.
 
 ## Declare one
 
-| `#[saga(..)]` | |
+| `#[domain::saga(..)]` | |
 | --- | --- |
 | `key = TransferId` | one run per key |
 | `rejects(..)` | how a run can be refused |
 | `sends(WithdrawMoney)` | commands whose rejections `?` passes on |
 
-The derive writes `ExecuteTransferRejection`. With `sends(WithdrawMoney)`, `?` on a debit turns `InsufficientFunds` into `ExecuteTransferRejection::InsufficientFunds`.
+The attribute writes `ExecuteTransferRejection`. With `sends(WithdrawMoney)`, `?` on a debit turns `InsufficientFunds` into `ExecuteTransferRejection::InsufficientFunds`.
 
 ## Steps
 
@@ -133,7 +131,7 @@ one ✓   two ✓   refuse ✗    →    undo two, undo one
 A compensation can't be rejected, so undoing can't get stuck:
 
 ```rust
-#[command(target = AccountId, events(MoneyDeposited), reply = Balance)]   // no rejects(..)
+#[domain::command(target = AccountId, events(MoneyDeposited), reply = Balance)]   // no rejects(..)
 pub struct RefundMoney { pub amount: u64 }
 ```
 

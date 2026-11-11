@@ -27,8 +27,7 @@ domain::id!(
 );
 
 /// Everything that runs together. The fraud review also needs a `FraudCheck` adapter.
-#[derive(domain::Model)]
-#[model(
+#[domain::model(
     aggregates(Account, Transfer),
     views(AccountSummary, OwnerHoldings, Statement),
     policies(FraudReview, TransferExecution),
@@ -37,8 +36,7 @@ domain::id!(
 pub struct Bank;
 
 /// What an app may do with a bank.
-#[derive(domain::Api)]
-#[api(
+#[domain::api(
     commands(OpenAccount, DepositMoney, WithdrawMoney, RequestTransfer),
     views(AccountSummary, OwnerHoldings, Statement)
 )]

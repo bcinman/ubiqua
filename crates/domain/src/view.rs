@@ -42,23 +42,23 @@ pub trait Keyed: Sized + 'static {
 }
 
 /// A read model: state per key, folded from the events of aggregates and other views.
-/// Derive it with `#[derive(View)]`, then implement [`Apply`].
+/// Declare it with `#[domain::view(..)]`, then implement [`Apply`].
 pub trait View: Keyed {
     const NAME: &'static str;
     /// Change it whenever you change what the view computes, so a stored view is rebuilt from the
-    /// events, along with every view that reads it. `#[view(version = 1)]` sets it.
+    /// events, along with every view that reads it. `#[domain::view(version = 1)]` sets it.
     const VERSION: u64 = 0;
     /// `Default` is the state before the key's first event.
     type State: Clone + Debug + Default + PartialEq + Serialize + DeserializeOwned + MaybeSend + 'static;
     /// The events the view emits. Without `events(..)`, every input it applies.
     type Event: Events;
-    /// Why a read may be refused: `#[view(rejects(..))]`. Empty unless the view guards its keys.
+    /// Why a read may be refused: `#[domain::view(rejects(..))]`. Empty unless the view guards its keys.
     type Rejection: Rejections;
 
     /// Calls `sources.source::<S>()` for each aggregate or view it reads.
     fn sources<S: Sources<Self>>(sources: &mut S);
 
-    /// Calls `predictions.predicts::<C>()` for each command it predicts: `#[view(predicts(..))]`.
+    /// Calls `predictions.predicts::<C>()` for each command it predicts: `#[domain::view(predicts(..))]`.
     fn predictions<P: Predictions<Self>>(predictions: &mut P) {
         let _ = predictions;
     }
@@ -75,7 +75,7 @@ pub trait Apply: View {
 }
 
 /// How a command would change a view, so a client can show the change as soon as the command
-/// is sent, before the server answers. List the command in `#[view(predicts(..))]`, then
+/// is sent, before the server answers. List the command in `#[domain::view(predicts(..))]`, then
 /// implement this. Keep it pure: it runs on the client, on whatever state the client has.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` lists `{C}` in `predicts(..)` but has no `impl Predict<{C}>`",
@@ -120,7 +120,7 @@ pub trait Sources<V: Keyed> {
 }
 
 /// Picks the key for events from a source whose id isn't the view's key.
-/// List the source in `#[view(key_of(..))]`, then implement this.
+/// List the source in `#[domain::view(key_of(..))]`, then implement this.
 pub trait KeyOf<S: Source>: Keyed {
     /// `None` means the event belongs to no key.
     fn key_of(from: Origin<'_, S>, input: &Self::Input) -> Option<Self::Key>;
@@ -300,14 +300,14 @@ impl fmt::Display for NotCaughtUp {
 
 impl std::error::Error for NotCaughtUp {}
 
-/// Aggregates and views that run together. Derive it with `#[derive(Model)]`.
+/// Aggregates and views that run together. Declare it with `#[domain::model(..)]`.
 pub trait Model: 'static {
     const NAME: &'static str;
     fn register<R: Registry>(registry: &mut R);
 }
 
 /// A model's `policies(..)` and `sagas(..)`, for a host `H` that runs each of them.
-/// `#[derive(Model)]` implements it; a host bounds on it to run them with the model.
+/// `#[domain::model(..)]` implements it; a host bounds on it to run them with the model.
 pub trait Hosts<H>: Model {
     /// Hands `host` each policy and saga the model lists.
     fn host(host: H) -> H;

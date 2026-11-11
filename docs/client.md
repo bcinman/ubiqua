@@ -20,8 +20,7 @@ redraw: Ok(Some(Summary { owner: Some("sam"), balance: 100 }))
 ## Say what the app may use
 
 ```rust
-#[derive(Api)]
-#[api(commands(OpenAccount, DepositMoney, WithdrawMoney), views(AccountSummary, OwnerHoldings, Statement))]
+#[domain::api(commands(OpenAccount, DepositMoney, WithdrawMoney), views(AccountSummary, OwnerHoldings, Statement))]
 pub struct BankApi;
 ```
 
@@ -33,7 +32,7 @@ client.send(&sam, CloseAccount);
 
 ```text
 error[E0277]: `BankApi` doesn't let clients send `CloseAccount`
-  add `CloseAccount` to `#[api(commands(..))]`
+  add `CloseAccount` to `#[domain::api(commands(..))]`
 ```
 
 ```rust
@@ -42,7 +41,7 @@ client.view::<AuditLog>();
 
 ```text
 error[E0277]: `BankApi` doesn't let clients read `AuditLog`
-  add `AuditLog` to `#[api(views(..))]`
+  add `AuditLog` to `#[domain::api(views(..))]`
 ```
 
 ## Start one

@@ -151,7 +151,7 @@ cargo check --target wasm32-unknown-unknown -p bank --lib
 There's no system clock there, so use `Memory::with_clock`. And state there doesn't have to be `Send`:
 
 ```rust
-#[aggregate(id = NoteId, state = Rc<Note>, ..)]   // builds for wasm, refused natively
+#[domain::aggregate(id = NoteId, state = Rc<Note>, ..)]   // builds for wasm, refused natively
 ```
 
 That's `MaybeSend` and `MaybeSync`: `Send` and `Sync` natively, nothing on wasm. Bound on them in code meant for both.

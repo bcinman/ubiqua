@@ -64,8 +64,7 @@ Events are stored and rejections cross the network, so each attribute also deriv
 ## 4. Write the aggregate
 
 ```rust
-#[derive(Aggregate)]
-#[aggregate(
+#[domain::aggregate(
     id = AccountId,
     state = AccountState,
     events(AccountOpened, MoneyDeposited, MoneyWithdrawn),
@@ -126,8 +125,7 @@ The example sends through a [client](client.md), as an app would. `cargo run -p 
 ## 6. Add a view
 
 ```rust
-#[derive(View)]
-#[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
+#[domain::view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
 pub struct AccountSummary;
 
 impl Apply for AccountSummary {
@@ -140,8 +138,7 @@ impl Apply for AccountSummary {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
+#[domain::model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]
 pub struct Bank;
 ```
 

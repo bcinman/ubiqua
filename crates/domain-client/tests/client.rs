@@ -1,4 +1,4 @@
-use domain::{Aggregate, Api, Apply, Cx, Decide, Decision, Evolve, Model, Reply, SendError, View, ViewCx};
+use domain::{Apply, Cx, Decide, Decision, Evolve, Reply, SendError, ViewCx};
 use domain_client::{Client, ReadError};
 use domain_memory::{Memory, Runtime};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,8 +27,7 @@ struct Added {
 #[domain::rejection]
 struct TooBig;
 
-#[derive(Aggregate)]
-#[aggregate(id = CounterId, state = i64, events(Added), commands(Add))]
+#[domain::aggregate(id = CounterId, state = i64, events(Added), commands(Add))]
 struct Counter;
 
 impl Evolve for Counter {
@@ -61,8 +60,7 @@ struct Ping;
 #[domain::event]
 struct Pinged;
 
-#[derive(Aggregate)]
-#[aggregate(id = OtherId, state = (), events(Pinged), commands(Ping))]
+#[domain::aggregate(id = OtherId, state = (), events(Pinged), commands(Ping))]
 struct Other;
 
 impl Evolve for Other {
@@ -75,8 +73,7 @@ impl Decide<Ping> for Other {
     }
 }
 
-#[derive(View)]
-#[view(key = CounterId, from(Counter(Added)), state = i64)]
+#[domain::view(key = CounterId, from(Counter(Added)), state = i64)]
 struct Total;
 
 impl Apply for Total {
@@ -88,12 +85,10 @@ impl Apply for Total {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Counter, Other), views(Total))]
+#[domain::model(aggregates(Counter, Other), views(Total))]
 struct Counting;
 
-#[derive(Api)]
-#[api(commands(Add, Ping), views(Total))]
+#[domain::api(commands(Add, Ping), views(Total))]
 struct CountingApi;
 
 fn c(id: &str) -> CounterId {
@@ -342,8 +337,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// Pings `<counter>` on `Other` for each addition, and again a little later.
-#[derive(domain::Policy)]
-#[policy(from(Counter(Added)))]
+#[domain::policy(from(Counter(Added)))]
 struct PingBack;
 
 impl domain_memory::React for PingBack {
@@ -375,12 +369,10 @@ fn the_domain_thread_runs_policies_and_schedules_on_its_own() {
 
 // An adapter that answers from another thread, as an HTTP client would.
 
-#[derive(domain::Call, Debug, PartialEq)]
-#[call(system = Slow, returns = bool)]
+#[domain::call(system = Slow, returns = bool)]
 struct Check;
 
-#[derive(domain::ExternalSystem)]
-#[external_system(calls(Check))]
+#[domain::external_system(calls(Check))]
 struct Slow;
 
 struct SlowAdapter;
@@ -412,8 +404,7 @@ impl domain::Answer<Check> for SlowAdapter {
     }
 }
 
-#[derive(domain::Policy)]
-#[policy(from(Counter(Added)))]
+#[domain::policy(from(Counter(Added)))]
 struct CheckThenPing;
 
 impl domain_memory::React for CheckThenPing {

@@ -1,6 +1,4 @@
-use domain::{
-    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Frame, KeyOf, Model, Origin, Timestamp, View, ViewCx,
-};
+use domain::{Apply, Cursor, Cx, Decide, Decision, Evolve, Frame, KeyOf, Origin, Timestamp, ViewCx};
 use domain_memory::{Memory, Runtime};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -39,8 +37,7 @@ struct Credited {
 #[domain::event]
 struct Noted;
 
-#[derive(Aggregate)]
-#[aggregate(id = WalletId, state = u64, events(Credited, Noted), commands(Credit, Note))]
+#[domain::aggregate(id = WalletId, state = u64, events(Credited, Noted), commands(Credit, Note))]
 struct Wallet;
 
 impl Evolve for Wallet {
@@ -73,8 +70,7 @@ struct Joined {
     member: String,
 }
 
-#[derive(Aggregate)]
-#[aggregate(id = ClubId, state = (), events(Joined), commands(Join))]
+#[domain::aggregate(id = ClubId, state = (), events(Joined), commands(Join))]
 struct Club;
 
 impl Evolve for Club {
@@ -88,8 +84,7 @@ impl Decide<Join> for Club {
 }
 
 /// Each wallet's total. Emits every credit it applies.
-#[derive(View)]
-#[view(key = WalletId, from(Wallet(Credited)), state = u64)]
+#[domain::view(key = WalletId, from(Wallet(Credited)), state = u64)]
 struct Totals;
 
 impl Apply for Totals {
@@ -100,8 +95,7 @@ impl Apply for Totals {
 }
 
 /// Per owner, across wallets and clubs: what they were credited, and in what order things happened.
-#[derive(View)]
-#[view(key = OwnerId, from(Wallet(Credited), Club(Joined)), key_of(Wallet, Club), state = Activity)]
+#[domain::view(key = OwnerId, from(Wallet(Credited), Club(Joined)), key_of(Wallet, Club), state = Activity)]
 struct PerOwner;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -140,8 +134,7 @@ impl Apply for PerOwner {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Wallet, Club), views(Totals, PerOwner))]
+#[domain::model(aggregates(Wallet, Club), views(Totals, PerOwner))]
 struct Bank;
 
 fn w(id: &str) -> WalletId {
@@ -326,8 +319,7 @@ fn a_waiting_reader_wakes_when_an_entry_arrives() {
 static FLAKY_PANICKED: AtomicBool = AtomicBool::new(false);
 static FLAKY_APPLIED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
-#[derive(View)]
-#[view(key = WalletId, from(Wallet(Credited)), state = u64)]
+#[domain::view(key = WalletId, from(Wallet(Credited)), state = u64)]
 struct Flaky;
 
 impl Apply for Flaky {
@@ -341,8 +333,7 @@ impl Apply for Flaky {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Wallet), views(Flaky))]
+#[domain::model(aggregates(Wallet), views(Flaky))]
 struct FlakyBank;
 
 #[test]

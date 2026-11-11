@@ -3,8 +3,8 @@
 
 use crate::{Events, Source};
 
-/// Reacts to events from aggregates or views, after they commit. Derive it with
-/// `#[derive(Policy)]`, then implement the host's handler trait (`domain_memory::React`).
+/// Reacts to events from aggregates or views, after they commit. Declare it with
+/// `#[domain::policy(..)]`, then implement the host's handler trait (`domain_memory::React`).
 pub trait Policy: Sized + 'static {
     const NAME: &'static str;
     /// The events it reacts to, as an enum. The derive generates it.
@@ -14,7 +14,7 @@ pub trait Policy: Sized + 'static {
     fn sources<S: PolicySources<Self>>(sources: &mut S);
 }
 
-/// Picks out the events a policy reacts to from one source. `#[derive(Policy)]` implements it.
+/// Picks out the events a policy reacts to from one source. `#[domain::policy(..)]` implements it.
 pub trait Reacts<S: Source>: Policy {
     /// The input for this event, or `None` when the policy ignores it.
     fn route(event: &S::SourceEvent) -> Option<Self::Input>;

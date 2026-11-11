@@ -1,7 +1,4 @@
-use domain::{
-    Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, Model, Policy, Reply, SendError, StreamId, Timestamp,
-    ViewCx,
-};
+use domain::{Apply, Cursor, Cx, Decide, Decision, Evolve, Reply, SendError, StreamId, Timestamp, ViewCx};
 use domain_memory::{Memory, PolicyCx, PolicyError, React};
 use domain_sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
@@ -38,8 +35,7 @@ pub struct Credited {
     total: u64,
 }
 
-#[derive(Aggregate)]
-#[aggregate(id = WalletId, state = u64, events(Credited), commands(Credit, Note, Claim))]
+#[domain::aggregate(id = WalletId, state = u64, events(Credited), commands(Credit, Note, Claim))]
 pub struct Wallet;
 
 impl Evolve for Wallet {
@@ -73,16 +69,14 @@ impl Decide<Note> for Wallet {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Wallet))]
+#[domain::model(aggregates(Wallet))]
 pub struct WalletsOnly;
 
 /// The first version of the views: the summary sums the amounts.
 mod v0 {
     use super::*;
 
-    #[derive(domain::View)]
-    #[view(key = WalletId, from(Wallet(Credited)), state = u64)]
+    #[domain::view(key = WalletId, from(Wallet(Credited)), state = u64)]
     pub struct Summary;
 
     impl Apply for Summary {
@@ -92,8 +86,7 @@ mod v0 {
         }
     }
 
-    #[derive(domain::View)]
-    #[view(key = WalletId, from(Summary(Credited)), state = u64)]
+    #[domain::view(key = WalletId, from(Summary(Credited)), state = u64)]
     pub struct Overview;
 
     impl Apply for Overview {
@@ -102,8 +95,7 @@ mod v0 {
         }
     }
 
-    #[derive(Model)]
-    #[model(aggregates(Wallet), views(Summary, Overview))]
+    #[domain::model(aggregates(Wallet), views(Summary, Overview))]
     pub struct Wallets;
 }
 
@@ -112,8 +104,7 @@ mod v1 {
     use super::*;
     use domain::{KeyOf, Origin};
 
-    #[derive(domain::View)]
-    #[view(key = WalletId, from(Wallet(Credited)), key_of(Wallet), state = u64, version = 1)]
+    #[domain::view(key = WalletId, from(Wallet(Credited)), key_of(Wallet), state = u64, version = 1)]
     pub struct Summary;
 
     impl KeyOf<Wallet> for Summary {
@@ -129,8 +120,7 @@ mod v1 {
         }
     }
 
-    #[derive(domain::View)]
-    #[view(key = WalletId, from(Summary(Credited)), state = u64)]
+    #[domain::view(key = WalletId, from(Summary(Credited)), state = u64)]
     pub struct Overview;
 
     impl Apply for Overview {
@@ -139,15 +129,13 @@ mod v1 {
         }
     }
 
-    #[derive(Model)]
-    #[model(aggregates(Wallet), views(Summary, Overview))]
+    #[domain::model(aggregates(Wallet), views(Summary, Overview))]
     pub struct Wallets;
 }
 
 static FLAKY_FAILS: AtomicBool = AtomicBool::new(false);
 
-#[derive(domain::View)]
-#[view(key = WalletId, from(Wallet(Credited)), state = u64)]
+#[domain::view(key = WalletId, from(Wallet(Credited)), state = u64)]
 pub struct Flaky;
 
 impl Apply for Flaky {
@@ -158,8 +146,7 @@ impl Apply for Flaky {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Wallet), views(Flaky))]
+#[domain::model(aggregates(Wallet), views(Flaky))]
 pub struct FlakyWallets;
 
 /// A database file that's deleted when the test ends.
@@ -284,8 +271,7 @@ fn changing_a_views_version_rebuilds_it_and_the_views_that_read_it() {
 }
 
 /// Credits `<id>-bonus` with 1 for every credit, except to bonus wallets.
-#[derive(Policy)]
-#[policy(from(Wallet(Credited)))]
+#[domain::policy(from(Wallet(Credited)))]
 pub struct Bonus;
 
 impl React for Bonus {
@@ -356,11 +342,10 @@ fn a_schedule_fires_after_a_restart_once() {
 /// table. `p1` is the same projection under a new version.
 mod p0 {
     use super::*;
-    use domain::Projection;
+
     use domain_memory::{Project, ProjectionError, ProjectionInput};
 
-    #[derive(Projection)]
-    #[projection(key = WalletId, from(Wallet(Credited)))]
+    #[domain::projection(key = WalletId, from(Wallet(Credited)))]
     pub struct Rows(pub Arc<std::sync::Mutex<Vec<(String, u64)>>>);
 
     impl Project for Rows {
@@ -373,11 +358,10 @@ mod p0 {
 
 mod p1 {
     use super::*;
-    use domain::Projection;
+
     use domain_memory::{Project, ProjectionError, ProjectionInput};
 
-    #[derive(Projection)]
-    #[projection(key = WalletId, from(Wallet(Credited)), version = 1)]
+    #[domain::projection(key = WalletId, from(Wallet(Credited)), version = 1)]
     pub struct Rows(pub Arc<std::sync::Mutex<Vec<(String, u64)>>>);
 
     impl Project for Rows {
@@ -410,8 +394,8 @@ fn a_projection_writes_what_it_missed_and_all_of_history_when_its_version_change
 
 /// Credits `<key>-paid` with 1, tries to claim `<key>`, waits for `go`, then credits
 /// `<key>-paid` with 10 if the claim succeeded, or 100 if it was refused.
-#[derive(domain::Saga, Debug, Serialize, Deserialize)]
-#[saga(key = WalletId)]
+#[domain::saga(key = WalletId)]
+#[derive(Debug)]
 pub struct Pay;
 
 impl domain_memory::Run for Pay {

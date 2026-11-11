@@ -11,8 +11,7 @@ event ──▶ policy ──▶ command          now
 From [`examples/bank/src/fraud.rs`](../examples/bank/src/fraud.rs):
 
 ```rust
-#[derive(Policy)]
-#[policy(from(Account(MoneyWithdrawn)))]
+#[domain::policy(from(Account(MoneyWithdrawn)))]
 pub struct FraudReview;
 
 impl React for FraudReview {
@@ -35,8 +34,7 @@ impl React for FraudReview {
 List it in the model, and give its outside system an adapter:
 
 ```rust
-#[derive(Model)]
-#[model(aggregates(Account), views(..), policies(FraudReview))]
+#[domain::model(aggregates(Account), views(..), policies(FraudReview))]
 pub struct Bank;
 
 let bank = Memory::new().with::<Bank>().external(FraudCheck, Vendor);
@@ -58,10 +56,10 @@ withdraw 10: rejected: Frozen
 
 ## Declare one
 
-`from(..)` lists the events it reacts to, as in a [view](views.md). The derive writes the input enum:
+`from(..)` lists the events it reacts to, as in a [view](views.md). The attribute writes the input enum:
 
 ```rust
-#[policy(from(Account(MoneyWithdrawn, MoneyDeposited), Customer(CustomerRegistered)))]
+#[domain::policy(from(Account(MoneyWithdrawn, MoneyDeposited), Customer(CustomerRegistered)))]
 pub struct Notify;
 
 // generated:
@@ -126,15 +124,13 @@ With [SQLite](storage.md), a policy remembers how far it got. After a restart it
 Name the service and its calls in the bank's words. An adapter talks to the vendor:
 
 ```rust
-#[derive(Call, Clone, Debug, PartialEq)]
-#[call(system = FraudCheck, returns = Risk, errors(Blocked))]
+#[domain::call(system = FraudCheck, returns = Risk, errors(Blocked))]
 pub struct ScoreWithdrawal {
     pub account: AccountId,
     pub amount: u64,
 }
 
-#[derive(ExternalSystem)]
-#[external_system(calls(ScoreWithdrawal))]
+#[domain::external_system(calls(ScoreWithdrawal))]
 pub struct FraudCheck;
 
 struct Vendor { http: HttpClient }
@@ -181,7 +177,7 @@ bank.unschedule(&sam, "thaw-sam")?;
 Only commands that can't be rejected can be scheduled, because nobody is there to handle a rejection:
 
 ```rust
-#[command(target = AccountId, events(AccountThawed))]       // no rejects(..)
+#[domain::command(target = AccountId, events(AccountThawed))]       // no rejects(..)
 pub struct ThawAccount;
 
 impl Decide<ThawAccount> for Account {

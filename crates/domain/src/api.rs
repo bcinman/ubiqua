@@ -2,7 +2,7 @@
 
 use crate::{AggregateId, Apply, Command, Handles, Validate, View};
 
-/// The commands and views a client may use. Derive it with `#[derive(Api)]`.
+/// The commands and views a client may use. Declare it with `#[domain::api(..)]`.
 pub trait Api: 'static {
     const NAME: &'static str;
 
@@ -18,17 +18,17 @@ pub trait ApiRegistry {
     fn view<V: Apply + Validate>(&mut self);
 }
 
-/// The Api lets clients send `C`. `#[derive(Api)]` implements it for each of `commands(..)`.
+/// The Api lets clients send `C`. `#[domain::api(..)]` implements it for each of `commands(..)`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` doesn't let clients send `{C}`",
-    label = "add `{C}` to `#[api(commands(..))]`"
+    label = "add `{C}` to `#[domain::api(commands(..))]`"
 )]
 pub trait Sends<C: Command>: Api {}
 
-/// The Api lets clients read `V`. `#[derive(Api)]` implements it for each of `views(..)`.
+/// The Api lets clients read `V`. `#[domain::api(..)]` implements it for each of `views(..)`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` doesn't let clients read `{V}`",
-    label = "add `{V}` to `#[api(views(..))]`"
+    label = "add `{V}` to `#[domain::api(views(..))]`"
 )]
 pub trait Reads<V: View>: Api {}
 

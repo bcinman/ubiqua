@@ -43,8 +43,7 @@ fn must_own(user: Option<&User>, owner: Option<&str>) -> Result<(), NotOwner> {
 List what a read can be refused with, then implement `Validate`:
 
 ```rust
-#[derive(View)]
-#[view(key = AccountId, from(Account(..)), state = Summary, rejects(NotOwner))]
+#[domain::view(key = AccountId, from(Account(..)), state = Summary, rejects(NotOwner))]
 pub struct AccountSummary;
 
 impl Validate for AccountSummary {

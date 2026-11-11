@@ -2,13 +2,11 @@
 //! kind of table an accountant queries across accounts. A projection writes it.
 
 use crate::*;
-use domain::prelude::*;
 use domain_memory::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-#[derive(Projection)]
-#[projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
+#[domain::projection(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)))]
 pub struct Ledger {
     pub store: LedgerStore,
 }

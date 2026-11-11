@@ -1,7 +1,6 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Policy, Saga};
+use domain::{Cx, Decide, Decision, Evolve};
 use domain_memory::{PolicyCx, PolicyError, React, Run, SagaCx, SagaStatus};
 use domain_story::Story;
-use serde::{Deserialize, Serialize};
 
 // Ringing a door starts a visit: the door opens, and closes once the visitor has left.
 
@@ -27,8 +26,7 @@ pub struct Opened;
 #[domain::event]
 pub struct Closed;
 
-#[derive(Aggregate)]
-#[aggregate(id = DoorId, state = (), events(Rang, Opened, Closed), commands(Ring, Open, Close))]
+#[domain::aggregate(id = DoorId, state = (), events(Rang, Opened, Closed), commands(Ring, Open, Close))]
 pub struct Door;
 
 impl Evolve for Door {
@@ -53,8 +51,7 @@ impl Decide<Close> for Door {
     }
 }
 
-#[derive(Policy)]
-#[policy(from(Door(Rang)))]
+#[domain::policy(from(Door(Rang)))]
 pub struct Answer;
 
 impl React for Answer {
@@ -66,8 +63,8 @@ impl React for Answer {
 }
 
 /// Opens the door, waits for `left`, then closes it.
-#[derive(Saga, Debug, Serialize, Deserialize)]
-#[saga(key = DoorId)]
+#[domain::saga(key = DoorId)]
+#[derive(Debug)]
 pub struct Visit;
 
 impl Run for Visit {

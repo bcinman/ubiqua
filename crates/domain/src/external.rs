@@ -8,7 +8,7 @@ use std::future::Future;
 use std::rc::Rc;
 
 /// One call the model makes to an outside system; the struct holds its arguments.
-/// Derive it with `#[derive(Call)]`.
+/// Declare it with `#[domain::call(..)]`.
 pub trait Call: Debug + PartialEq + 'static {
     const NAME: &'static str;
     /// The system's name, such as `FraudCheck`.
@@ -51,16 +51,16 @@ pub trait Answer<C: Call>: 'static {
     fn answer(&self, call: C) -> impl Future<Output = Answered<C>>;
 }
 
-/// An outside system and the calls the model makes to it. Derive it with
-/// `#[derive(ExternalSystem)]`.
+/// An outside system and the calls the model makes to it. Declare it with
+/// `#[domain::external_system(..)]`.
 pub trait ExternalSystem: 'static {
     const NAME: &'static str;
 }
 
-/// `I` answers every call of this system. `#[derive(ExternalSystem)]` implements it.
+/// `I` answers every call of this system. `#[domain::external_system(..)]` implements it.
 #[diagnostic::on_unimplemented(
     message = "`{I}` doesn't answer every call of `{Self}`",
-    label = "needs `impl Answer<..> for {I}` for each call in `#[external_system(calls(..))]`"
+    label = "needs `impl Answer<..> for {I}` for each call in `#[domain::external_system(calls(..))]`"
 )]
 pub trait Adapter<I>: ExternalSystem {
     fn register<R: Calls>(adapter: Rc<I>, calls: &mut R);

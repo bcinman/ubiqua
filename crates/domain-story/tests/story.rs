@@ -1,4 +1,4 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply, Timestamp};
+use domain::{Cx, Decide, Decision, Evolve, Reply, Timestamp};
 use domain_story::Story;
 
 domain::id!(
@@ -26,8 +26,7 @@ struct Lamp {
     broken: bool,
 }
 
-#[derive(Aggregate)]
-#[aggregate(id = LampId, state = Lamp, events(Switched, Smashed), commands(Toggle))]
+#[domain::aggregate(id = LampId, state = Lamp, events(Switched, Smashed), commands(Toggle))]
 struct Light;
 
 impl Evolve for Light {

@@ -3,8 +3,7 @@
 An aggregate guards a rule: "a balance never goes below zero". It holds just the state that rule needs.
 
 ```rust
-#[derive(Aggregate)]
-#[aggregate(
+#[domain::aggregate(
     id = AccountId,
     state = AccountState,
     events(AccountOpened, MoneyDeposited, MoneyWithdrawn),
@@ -13,7 +12,7 @@ An aggregate guards a rule: "a balance never goes below zero". It holds just the
 pub struct Account;
 ```
 
-The derive generates `AccountEvent`, an enum of the listed events, and checks that `Account` implements `Evolve` and a `Decide` for each command.
+The attribute generates `AccountEvent`, an enum of the listed events, and checks that `Account` implements `Evolve` and a `Decide` for each command.
 
 ## State
 
@@ -123,8 +122,7 @@ Each instance decides one command at a time. The second withdrawal sees the bala
 A rule that spans instances gets its own aggregate. "Usernames are unique" is about one username:
 
 ```rust
-#[derive(Aggregate)]
-#[aggregate(id = Username, state = Claim, events(UsernameClaimed), commands(ClaimUsername))]
+#[domain::aggregate(id = Username, state = Claim, events(UsernameClaimed), commands(ClaimUsername))]
 pub struct UsernameClaim;
 ```
 

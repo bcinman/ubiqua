@@ -1,6 +1,5 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Model, Saga};
+use domain::{Cx, Decide, Decision, Evolve};
 use domain_memory::{Memory, Run, SagaCx, SagaStatus, SignalError};
-use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
 // A log records notes. `Refuse` is always rejected.
@@ -21,8 +20,7 @@ pub struct Noted(String);
 #[domain::rejection]
 pub struct No;
 
-#[derive(Aggregate)]
-#[aggregate(id = LogId, state = (), events(Noted), commands(Note, Refuse))]
+#[domain::aggregate(id = LogId, state = (), events(Noted), commands(Note, Refuse))]
 pub struct Log;
 
 impl Evolve for Log {
@@ -41,14 +39,13 @@ impl Decide<Refuse> for Log {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Log))]
+#[domain::model(aggregates(Log))]
 pub struct Logging;
 
 /// Notes `one` and `two`, each undone by a note, then waits for `go` and, if told to, ends
 /// with a refused step.
-#[derive(Saga, Debug, Serialize, Deserialize)]
-#[saga(key = LogId, rejects(No), sends(Refuse))]
+#[domain::saga(key = LogId, rejects(No), sends(Refuse))]
+#[derive(Debug)]
 pub struct Steps {
     pub tag: String,
 }
@@ -68,8 +65,8 @@ impl Run for Steps {
 }
 
 /// Uses a step name twice.
-#[derive(Saga, Debug, Serialize, Deserialize)]
-#[saga(key = LogId)]
+#[domain::saga(key = LogId)]
+#[derive(Debug)]
 pub struct Twice;
 
 impl Run for Twice {

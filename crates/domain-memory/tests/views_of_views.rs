@@ -1,4 +1,4 @@
-use domain::{Aggregate, Apply, Cursor, Cx, Decide, Decision, Evolve, KeyOf, Model, Origin, View, ViewCx};
+use domain::{Apply, Cursor, Cx, Decide, Decision, Evolve, KeyOf, Origin, ViewCx};
 use domain_memory::{Memory, Runtime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -42,8 +42,7 @@ struct Moved {
 #[domain::event]
 struct Closed;
 
-#[derive(Aggregate)]
-#[aggregate(id = AccountId, state = i64, events(Opened, Moved, Closed), commands(Open, Move, Close))]
+#[domain::aggregate(id = AccountId, state = i64, events(Opened, Moved, Closed), commands(Open, Move, Close))]
 struct Account;
 
 impl Evolve for Account {
@@ -73,8 +72,7 @@ impl Decide<Close> for Account {
 }
 
 /// Per account. Emits every input it applies, with its state after it.
-#[derive(View)]
-#[view(key = AccountId, from(Account(Opened, Moved, Closed)), state = Summary)]
+#[domain::view(key = AccountId, from(Account(Opened, Moved, Closed)), state = Summary)]
 struct AccountSummary;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -95,8 +93,7 @@ impl Apply for AccountSummary {
 }
 
 /// Per owner: the balance of each open account, from the summaries.
-#[derive(View)]
-#[view(key = OwnerId, from(AccountSummary(Opened, Moved, Closed)), key_of(AccountSummary), state = Dashboard)]
+#[domain::view(key = OwnerId, from(AccountSummary(Opened, Moved, Closed)), key_of(AccountSummary), state = Dashboard)]
 struct OwnerDashboard;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -123,8 +120,7 @@ impl Apply for OwnerDashboard {
 }
 
 /// One key for everyone: each owner's total, from the dashboards. Three levels deep.
-#[derive(View)]
-#[view(key = Everyone, from(OwnerDashboard(Opened, Moved, Closed)), key_of(OwnerDashboard), state = Totals)]
+#[domain::view(key = Everyone, from(OwnerDashboard(Opened, Moved, Closed)), key_of(OwnerDashboard), state = Totals)]
 struct Leaderboard;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -146,13 +142,11 @@ impl Apply for Leaderboard {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Account), views(AccountSummary, OwnerDashboard, Leaderboard))]
+#[domain::model(aggregates(Account), views(AccountSummary, OwnerDashboard, Leaderboard))]
 struct Bank;
 
 /// Lists the views last-first, and leaves the summary out: hosting a view hosts its sources.
-#[derive(Model)]
-#[model(aggregates(Account), views(Leaderboard))]
+#[domain::model(aggregates(Account), views(Leaderboard))]
 struct Backwards;
 
 fn a(id: &str) -> AccountId {
@@ -296,12 +290,10 @@ fn views_of_views_stay_exact_under_concurrent_commands() {
 
 // Two views that read each other.
 
-#[derive(View)]
-#[view(key = AccountId, from(Account(Opened), Pong(Opened)))]
+#[domain::view(key = AccountId, from(Account(Opened), Pong(Opened)))]
 struct Ping;
 
-#[derive(View)]
-#[view(key = AccountId, from(Ping(Opened)))]
+#[domain::view(key = AccountId, from(Ping(Opened)))]
 struct Pong;
 
 impl Apply for Ping {
@@ -312,8 +304,7 @@ impl Apply for Pong {
     fn apply(_: &mut (), _: PongInput, _: &mut ViewCx<Self>) {}
 }
 
-#[derive(Model)]
-#[model(aggregates(Account), views(Ping))]
+#[domain::model(aggregates(Account), views(Ping))]
 struct Loop;
 
 #[test]
@@ -326,8 +317,7 @@ fn a_view_that_reads_itself_is_refused() {
 
 static SHAKY_PANICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[derive(View)]
-#[view(key = AccountId, from(Account(Opened, Moved)), state = Summary)]
+#[domain::view(key = AccountId, from(Account(Opened, Moved)), state = Summary)]
 struct ShakySummary;
 
 impl Apply for ShakySummary {
@@ -342,8 +332,7 @@ impl Apply for ShakySummary {
     }
 }
 
-#[derive(View)]
-#[view(key = OwnerId, from(ShakySummary(Opened, Moved)), key_of(ShakySummary), state = i64)]
+#[domain::view(key = OwnerId, from(ShakySummary(Opened, Moved)), key_of(ShakySummary), state = i64)]
 struct ShakyTotal;
 
 impl KeyOf<ShakySummary> for ShakyTotal {
@@ -358,8 +347,7 @@ impl Apply for ShakyTotal {
     }
 }
 
-#[derive(Model)]
-#[model(aggregates(Account), views(ShakyTotal))]
+#[domain::model(aggregates(Account), views(ShakyTotal))]
 struct Shaky;
 
 #[test]

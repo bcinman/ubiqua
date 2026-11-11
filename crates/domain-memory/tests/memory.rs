@@ -1,4 +1,4 @@
-use domain::{Aggregate, Cx, Decide, Decision, Evolve, Reply, SendError};
+use domain::{Cx, Decide, Decision, Evolve, Reply, SendError};
 use domain_memory::{Memory, Runtime};
 
 domain::id!(
@@ -21,8 +21,7 @@ struct Incremented {
 #[domain::rejection]
 struct TooHigh;
 
-#[derive(Aggregate)]
-#[aggregate(id = CounterId, state = u64, events(Incremented), commands(Increment, IncrementBelow))]
+#[domain::aggregate(id = CounterId, state = u64, events(Incremented), commands(Increment, IncrementBelow))]
 struct Counter;
 
 impl Evolve for Counter {

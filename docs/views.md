@@ -11,8 +11,7 @@ Account a-2 ──events──▶ AccountSummary a-2 ──┘
 ## Fold events into state
 
 ```rust
-#[derive(View)]
-#[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
+#[domain::view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
 pub struct AccountSummary;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -40,13 +39,12 @@ impl Apply for AccountSummary {
 | `version = 1` | see [Change a view](#change-a-view); omit for `0` |
 | `predicts(DepositMoney)` | show a command before its answer; see [Offline and instant](offline.md) |
 
-The derive generates `AccountSummaryInput`, an enum of exactly the events listed. Other events pass by.
+The attribute generates `AccountSummaryInput`, an enum of exactly the events listed. Other events pass by.
 
 ## Emit events of your own
 
 ```rust
-#[derive(View)]
-#[view(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)), events(StatementLine))]
+#[domain::view(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)), events(StatementLine))]
 pub struct Statement;
 
 impl Apply for Statement {
@@ -64,8 +62,7 @@ Without `events(..)`, a view emits every input it applies.
 ## Read several sources into one key
 
 ```rust
-#[derive(View)]
-#[view(key = OwnerId, from(Wallet(Credited), Club(Joined)), key_of(Wallet, Club), state = Activity)]
+#[domain::view(key = OwnerId, from(Wallet(Credited), Club(Joined)), key_of(Wallet, Club), state = Activity)]
 struct PerOwner;
 
 impl KeyOf<Wallet> for PerOwner {
@@ -95,8 +92,7 @@ A view that reads one source has `cx.source_id()`, the id itself, with no `Optio
 A view can read another view's emitted events. Each arrives with that view's state after it.
 
 ```rust
-#[derive(View)]
-#[view(
+#[domain::view(
     key = OwnerId,
     from(AccountSummary(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     key_of(AccountSummary),
@@ -137,8 +133,7 @@ Views chain as deep as you like. Hosting a view hosts the views it reads first, 
 ## Put it in a model
 
 ```rust
-#[derive(Model)]
-#[model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]   // and policies(..), sagas(..)
+#[domain::model(aggregates(Account), views(AccountSummary, OwnerHoldings, Statement))]   // and policies(..), sagas(..)
 pub struct Bank;
 
 let bank = Memory::new().with::<Bank>();
@@ -204,7 +199,7 @@ Dropping a feed unsubscribes.
 A stored view keeps its state between runs. When you change what it computes (its `apply`, `key_of`, state, or the events it reads), change its version:
 
 ```rust
-#[view(key = AccountId, from(Account(..)), state = Summary, version = 1)]
+#[domain::view(key = AccountId, from(Account(..)), state = Summary, version = 1)]
 pub struct AccountSummary;
 ```
 
@@ -239,7 +234,7 @@ See [Stories](stories.md).
 ## Decide who may read it
 
 ```rust
-#[view(key = AccountId, from(Account(..)), state = Summary, rejects(NotOwner))]
+#[domain::view(key = AccountId, from(Account(..)), state = Summary, rejects(NotOwner))]
 pub struct AccountSummary;
 
 impl Validate for AccountSummary { .. }

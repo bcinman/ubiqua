@@ -242,6 +242,8 @@ fn a_panicking_callback_doesnt_stop_the_domain_thread() {
 fn callbacks_may_read_and_send_without_deadlocking() {
     let client = Client::<CountingApi>::in_process(runtime());
     let live = client.view::<Total>().live(&c("a"));
+    // Past the runtime's first state, `None`, which would send once more.
+    settled(&client);
     let reads = Arc::new(Mutex::new(Vec::new()));
     let (inner, me, log) = (client.clone(), live.clone(), reads.clone());
     let _listener = live.on_change(move |total, _| {
@@ -251,15 +253,18 @@ fn callbacks_may_read_and_send_without_deadlocking() {
         let latest = me.latest().0.as_ref().clone().unwrap();
         let total = total.as_ref().clone().unwrap();
         log.lock().unwrap().push((total, read, latest));
-        if total.unwrap_or(0) < 3 {
+        if total.unwrap() < 3 {
             inner.send(&c("a"), Add { n: 1 });
         }
     });
     block_on(client.send(&c("a"), Add { n: 1 })).unwrap();
     let mut version = live.latest().1;
-    while *live.latest().0 != Ok(Some(3)) {
+    while live.latest().0.as_ref().clone().unwrap() < Some(3) {
         version = block_on(live.changed(version)).1;
     }
+    // Waiters wake before callbacks run, so let the last callback finish.
+    settled(&client);
+    assert_eq!(*live.latest().0, Ok(Some(3)));
     let reads = std::mem::take(&mut *reads.lock().unwrap());
     assert_eq!(reads.last().map(|(seen, _, latest)| (*seen, *latest)), Some((Some(3), Some(3))));
     for (seen, read, latest) in reads {

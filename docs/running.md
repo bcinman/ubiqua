@@ -62,6 +62,14 @@ send ──▶ decide ──▶ commit ─────────────�
                     queued deliveries           after the commit
 ```
 
+## Send as someone
+
+```rust
+bank.send_as(Some(&CurrentActor::new(User("sam".into()))), &sam, WithdrawMoney { amount: 30 }, "req-2")?;
+```
+
+`decide` reads it with `cx.actor::<User>()`. See [Who is asking](sessions.md).
+
 ## Read
 
 Views: see [Views](views.md#read-it). The aggregates themselves:

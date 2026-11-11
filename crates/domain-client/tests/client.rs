@@ -1,7 +1,7 @@
 use domain::{
     Aggregate, Api, Apply, Command, Cx, Decide, Decision, Event, Evolve, Model, Rejection, SendError, View, ViewCx,
 };
-use domain_client::{Client, LiveView, Pending, ReadError};
+use domain_client::{Client, LiveView, Pending, Read, ReadError};
 use domain_memory::Memory;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +28,7 @@ struct Added {
     total: i64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct TooBig;
 
 #[derive(Aggregate)]
@@ -193,22 +193,22 @@ fn a_live_view_starts_at_the_state_now_and_follows_changes() {
     let client = Client::<CountingApi>::inline(memory());
     client.send(&c("a"), Add { n: 2 });
     let live = client.view::<Total>().live(&c("a"));
-    assert_eq!(*live.latest().0, Some(2));
+    assert_eq!(*live.latest().0, Ok(Some(2)));
     assert_eq!(live.latest().1, 0);
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let listener = live.on_change(move |total, version| log.lock().unwrap().push((**total, version)));
+    let listener = live.on_change(move |total, version| log.lock().unwrap().push(((**total).clone(), version)));
     client.send(&c("a"), Add { n: 3 });
     client.send(&c("b"), Add { n: 100 }); // another key
     client.send(&c("a"), Add { n: 0 }); // no change
     client.send(&c("a"), Add { n: 1 });
-    assert_eq!(*seen.lock().unwrap(), [(Some(5), 1), (Some(6), 2)]);
+    assert_eq!(*seen.lock().unwrap(), [(Ok(Some(5)), 1), (Ok(Some(6)), 2)]);
 
     drop(listener);
     client.send(&c("a"), Add { n: 1 });
     assert_eq!(seen.lock().unwrap().len(), 2, "no callbacks after the listener drops");
-    assert_eq!(live.latest(), (Arc::new(Some(7)), 3));
+    assert_eq!(live.latest(), (Arc::new(Ok(Some(7))), 3));
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn a_live_view_can_be_awaited_from_another_thread() {
     std::thread::sleep(Duration::from_millis(20));
     client.send(&c("a"), Add { n: 9 });
     let (total, version) = waiting.join().unwrap();
-    assert_eq!((*total, version), (Some(9), 1));
+    assert_eq!(((*total).clone(), version), (Ok(Some(9)), 1));
 }
 
 #[test]
@@ -239,9 +239,9 @@ fn a_callback_may_read_its_own_live_view() {
     let live = client.view::<Total>().live(&c("a"));
     let (me, seen) = (live.clone(), Arc::new(Mutex::new(None)));
     let log = seen.clone();
-    let _listener = live.on_change(move |_, _| *log.lock().unwrap() = Some(*me.latest().0));
+    let _listener = live.on_change(move |_, _| *log.lock().unwrap() = Some((*me.latest().0).clone()));
     client.send(&c("a"), Add { n: 4 });
-    assert_eq!(*seen.lock().unwrap(), Some(Some(4)));
+    assert_eq!(*seen.lock().unwrap(), Some(Ok(Some(4))));
 }
 
 #[test]
@@ -253,13 +253,14 @@ fn callbacks_may_read_and_send_without_deadlocking() {
     let _listener = live.on_change(move |total, _| {
         // Read the view, then send to it again until it reaches 3.
         let read = inner.view::<Total>().get(&c("a")).try_get().unwrap().unwrap();
-        log.lock().unwrap().push((**total, read));
+        let total = total.as_ref().clone().unwrap();
+        log.lock().unwrap().push((total, read));
         if total.unwrap() < 3 {
             inner.send(&c("a"), Add { n: 1 });
         }
     });
     client.send(&c("a"), Add { n: 1 });
-    assert_eq!(*live.latest().0, Some(3));
+    assert_eq!(*live.latest().0, Ok(Some(3)));
     let reads = reads.lock().unwrap();
     assert_eq!(reads.last(), Some(&(Some(3), Some(3))));
     assert!(reads.iter().all(|(seen, read)| seen <= read), "{reads:?}");
@@ -286,7 +287,7 @@ fn a_live_view_ends_at_the_last_state_under_concurrent_writers() {
         .collect();
     writers.into_iter().for_each(|w| w.join().unwrap());
 
-    assert_eq!(*live.latest().0, Some(800));
+    assert_eq!(*live.latest().0, Ok(Some(800)));
     let versions = versions.lock().unwrap();
     assert!(versions.windows(2).all(|w| w[0] < w[1]), "versions only go up");
 }
@@ -306,7 +307,7 @@ fn dropping_a_live_view_stops_its_updates() {
 
 #[test]
 fn ui_code_is_the_same_for_every_kind_of_client() {
-    fn deposit_and_show(client: &Client<CountingApi>) -> LiveView<Option<i64>> {
+    fn deposit_and_show(client: &Client<CountingApi>) -> LiveView<Read<Total>> {
         let live = client.view::<Total>().live(&c("a"));
         let sent: Pending<_> = client.send(&c("a"), Add { n: 5 });
         block_on(sent).unwrap();
@@ -314,7 +315,7 @@ fn ui_code_is_the_same_for_every_kind_of_client() {
     }
     for client in [Client::inline(memory()), Client::in_process(memory())] {
         let live = deposit_and_show(&client);
-        assert_eq!(*block_on(live.changed(0)).0, Some(5));
+        assert_eq!(*block_on(live.changed(0)).0, Ok(Some(5)));
     }
 }
 

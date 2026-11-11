@@ -9,6 +9,7 @@ dependencies = [
  "domain",
  "domain-client",
  "domain-memory",
+ "domain-server",
  "domain-sqlite",
  "domain-story",
  "serde",
@@ -48,6 +49,7 @@ version = "0.1.0"
 dependencies = [
  "domain-macros",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -56,7 +58,9 @@ version = "0.1.0"
 dependencies = [
  "domain",
  "domain-memory",
+ "domain-websocket",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -78,6 +82,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain-server"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "domain-client",
+ "domain-memory",
+ "domain-websocket",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "domain-sqlite"
 version = "0.1.0"
 dependencies = [
@@ -94,6 +110,13 @@ dependencies = [
  "domain",
  "domain-memory",
  "serde",
+]
+
+[[package]]
+name = "domain-websocket"
+version = "0.1.0"
+dependencies = [
+ "sha1_smol",
 ]
 
 [[package]]
@@ -283,6 +306,12 @@ dependencies = [
  "serde_core",
  "zmij",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "shlex"

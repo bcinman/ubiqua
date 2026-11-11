@@ -30,7 +30,7 @@
 //! # use domain::*;
 //! # domain::id!(pub struct DoorId;);
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
-//! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Jammed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
 //! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = (), events(Closed), commands(Close))] pub struct Door;
 //! # impl Evolve for Door { fn evolve(_: &mut (), _: &DoorEvent) {} }
 //! # impl Decide<Close> for Door { fn decide(_: &(), _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &()) {} }

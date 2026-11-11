@@ -410,7 +410,7 @@ impl<V: Apply> ViewReader<V> {
                 q.items.push_back(Frame::CaughtUp { cursor });
             }
             k.feeds.push(Arc::downgrade(&queue));
-            Subscription { queue }
+            Subscription { queue, _guard: None }
         })
     }
 
@@ -421,7 +421,7 @@ impl<V: Apply> ViewReader<V> {
             let queue = Arc::new(Queue::default());
             lock(&queue.inner).items.push_back(k.snapshot());
             k.watches.push(Arc::downgrade(&queue));
-            Subscription { queue }
+            Subscription { queue, _guard: None }
         })
     }
 
@@ -446,6 +446,40 @@ pub type Watch<V> = Subscription<Snapshot<V>>;
 /// any executor. Dropping it unsubscribes.
 pub struct Subscription<T> {
     queue: Arc<Queue<T>>,
+    /// Dropped with the subscription, such as to tell a server to stop sending.
+    _guard: Option<AnyBox>,
+}
+
+/// A subscription you fill yourself, for items that arrive from elsewhere, such as a server.
+/// `guard` is dropped when the subscription is.
+pub fn channel<T>(guard: impl Any + MaybeSend + MaybeSync) -> (Publisher<T>, Subscription<T>) {
+    let queue = Arc::new(Queue::default());
+    (Publisher { queue: Arc::downgrade(&queue) }, Subscription { queue, _guard: Some(Box::new(guard)) })
+}
+
+/// Fills a [`channel`]'s subscription.
+pub struct Publisher<T> {
+    queue: Weak<Queue<T>>,
+}
+
+impl<T> Clone for Publisher<T> {
+    fn clone(&self) -> Self {
+        Self { queue: self.queue.clone() }
+    }
+}
+
+impl<T> Publisher<T> {
+    /// Queues `item` and wakes the reader. Returns `false` once the subscription is gone.
+    pub fn push(&self, item: T) -> bool {
+        let Some(queue) = self.queue.upgrade() else { return false };
+        let wakeups: Vec<Wakeup> = {
+            let mut q = lock(&queue.inner);
+            q.items.push_back(item);
+            q.waker.take().map(Wakeup::Waker).into_iter().chain(q.notify.clone().map(Wakeup::Notify)).collect()
+        };
+        wakeups.into_iter().for_each(Wakeup::wake);
+        true
+    }
 }
 
 impl<T> Subscription<T> {

@@ -22,6 +22,8 @@ command ──▶ aggregate ──▶ events ──▶ views
    │                         │
    └────── policies ◀────────┘
            call outside systems, schedule for later
+
+the same Client in process, or over WebSocket to a server shared by many users
 ```
 
 - A **command** asks for a change: `WithdrawMoney { amount: 30 }`.
@@ -40,8 +42,10 @@ command ──▶ aggregate ──▶ events ──▶ views
 6. [Keep it on disk](storage.md): SQLite, restarts, changing a view.
 7. [The client](client.md): what an app uses: send, read, follow live, with any UI.
 8. [Policies](policies.md): react to events, call outside systems, schedule for later.
-9. [Stories](stories.md): test rules as given, when, then.
-10. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
+9. [Who is asking](sessions.md): actors, checked in `decide` and in a view's `validate`.
+10. [Serve it](server.md): client/server, many users, reconnecting.
+11. [Stories](stories.md): test rules as given, when, then.
+12. [Compile-time checks](compile-time-checks.md): the mistakes that don't build.
 
 ## Crates
 
@@ -50,11 +54,13 @@ command ──▶ aggregate ──▶ events ──▶ views
 | `domain` | traits, derives, `Receipt`, `Envelope`, the read protocol. No runtime. |
 | `domain-memory` | `Memory`: runs a model, its views and policies in memory. |
 | `domain-sqlite` | `Sqlite`: keeps a `Memory` in a file. |
-| `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses. |
+| `domain-client` | `Client`, `Pending`, `LiveView`: what an app uses, in process or connected. |
+| `domain-server` | `Server`: serves an Api over WebSocket. |
+| `domain-websocket` | WebSocket over `std::net`, for the two above. |
 | `domain-story` | `Story`: given, when, then. |
 
-No UI framework and no async runtime. Everything except `domain-sqlite` builds for `wasm32-unknown-unknown`.
+No UI framework and no async runtime. Everything except `domain-sqlite`, `domain-server` and `domain-websocket` builds for `wasm32-unknown-unknown`.
 
 ## Not yet
 
-A server and a client that talks to it, projections, sagas. See the design sketch's build order.
+Projections and sagas; a browser transport for `Client::connect`; `wss://`; optimistic updates (`predict`); more than one server process. See the design sketch's build order.

@@ -1,6 +1,6 @@
 //! Views: read models folded from events, and the read protocol hosts serve them with.
 
-use crate::{Command, Events, Evolve, MaybeSend, MaybeSync, Receipt, StreamId, Timestamp};
+use crate::{Command, Events, Evolve, MaybeSend, MaybeSync, ReadCx, Receipt, Rejections, StreamId, Timestamp};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::any::Any;
@@ -49,6 +49,8 @@ pub trait View: Sized + MaybeSend + MaybeSync + 'static {
     type Input: Events;
     /// The events the view emits. Without `events(..)`, every input it applies.
     type Event: Events;
+    /// Why a read may be refused: `#[view(rejects(..))]`. Empty unless the view guards its keys.
+    type Rejection: Rejections;
 
     /// Calls `sources.source::<S>()` for each aggregate or view it reads.
     fn sources<S: Sources<Self>>(sources: &mut S);
@@ -62,6 +64,18 @@ pub trait View: Sized + MaybeSend + MaybeSync + 'static {
 pub trait Apply: View {
     /// Update the key's state, and emit events with `cx.emit(..)`. Never fails: the input already happened.
     fn apply(state: &mut Self::State, input: Self::Input, cx: &mut ViewCx<'_, Self>);
+}
+
+/// Who may read a view's keys. A view with `rejects(..)` implements it; without, the derive does,
+/// allowing every read.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` declares `rejects(..)` but has no `impl Validate`",
+    label = "implement `Validate` for `{Self}`, or remove its `rejects(..)`"
+)]
+pub trait Validate: View {
+    /// Allow the read, or refuse it. Runs on every read, and again on each change while a
+    /// client watches the key: refusing ends the watch.
+    fn validate(cx: &ReadCx<'_>, key: &Self::Key, state: Option<&Self::State>) -> Result<(), Self::Rejection>;
 }
 
 /// Routes a source's events to the view's keys. `#[derive(View)]` implements it per source.
@@ -195,13 +209,15 @@ pub enum Frame<V: View> {
     CaughtUp {
         cursor: Cursor,
     },
+    /// The view's `validate` refused the reader. Nothing follows.
+    Rejected(V::Rejection),
 }
 
 impl<V: View> Frame<V> {
     pub fn entry(&self) -> Option<&Entry<V>> {
         match self {
             Frame::Entry(entry) => Some(entry),
-            Frame::CaughtUp { .. } => None,
+            _ => None,
         }
     }
 
@@ -293,6 +309,7 @@ impl<V: View> Clone for Frame<V> {
         match self {
             Frame::Entry(entry) => Frame::Entry(entry.clone()),
             Frame::CaughtUp { cursor } => Frame::CaughtUp { cursor: *cursor },
+            Frame::Rejected(rejection) => Frame::Rejected(rejection.clone()),
         }
     }
 }
@@ -302,6 +319,7 @@ impl<V: View> Debug for Frame<V> {
         match self {
             Frame::Entry(entry) => entry.fmt(f),
             Frame::CaughtUp { cursor } => f.debug_struct("CaughtUp").field("cursor", cursor).finish(),
+            Frame::Rejected(rejection) => f.debug_tuple("Rejected").field(rejection).finish(),
         }
     }
 }

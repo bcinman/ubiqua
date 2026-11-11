@@ -12,10 +12,10 @@ client.send(&sam, DepositMoney { amount: 100 });
 ```
 
 ```text
-redraw: Some(Summary { owner: Some("sam"), balance: 100 })
+redraw: Ok(Some(Summary { owner: Some("sam"), balance: 100 }))
 ```
 
-`cargo run -p bank` runs the full example.
+`cargo run -p bank` runs the full example. The same code runs against a [server](server.md).
 
 ## Say what the app may use
 
@@ -51,6 +51,12 @@ error[E0277]: `BankApi` doesn't let clients read `AuditLog`
 | --- | --- | --- |
 | `Client::in_process(memory)` | a thread of their own, in order | apps: the UI thread never waits |
 | `Client::inline(memory)` | the caller's thread | tests, scripts, the web |
+| `Client::connect(url, token)` | the [server](server.md) | client/server, many users |
+
+```rust
+let me = client.acting_as(User("sam".into()));   // in process: who sends and reads, see Who is asking
+client.connection();                              // LiveView<Connection>: Connected, Reconnecting, ..
+```
 
 [Policies](policies.md) and scheduled commands run on the domain thread too, between commands. With `inline`, call `Memory::run_due` for schedules.
 
@@ -103,18 +109,28 @@ Even if both attempts reach the model, the money leaves once. A panic during one
 ```rust
 let summaries = client.view::<AccountSummary>();
 
-summaries.get(&sam);                          // Pending<Result<Option<Summary>, ReadError>>
+summaries.get(&sam);                          // Pending<Read<AccountSummary>>
 summaries.get_at_least(&sam, &receipt);       // after your own write
 summaries.snapshot(&sam);                     // state + cursor
 client.view::<Statement>().list(&sam, Cursor::START, 20);
 client.view::<Statement>().events(&sam, cursor);   // a Feed, as in Views
 ```
 
-In the same process, reads are ready at once. A client that talks to a server will have the same methods, so treat every read as `Pending`.
+`Read<V>` is `Result<Option<V::State>, ReadError<V::Rejection>>`:
+
+```rust
+Ok(Some(Summary { owner: Some("sam"), balance: 70 }))
+Ok(None)                                        // no events for this key yet
+Err(ReadError::Rejected(NotOwner))              // the view's validate refused you
+Err(ReadError::NotCaughtUp(..))                 // get_at_least, before the view applied it
+Err(ReadError::Unavailable(reason))             // the server couldn't be reached
+```
+
+In the same process, reads are ready at once. Over a connection they take a round trip, so treat every read as `Pending`.
 
 ## Follow it live
 
-`live` returns a `LiveView`, which always holds the latest state. It offers three ways to see changes:
+`live` returns a `LiveView`, which always holds the latest `Read<V>`: what `get` would return now. It offers three ways to see changes:
 
 ```rust
 let summary = client.view::<AccountSummary>().live(&sam);
@@ -129,7 +145,7 @@ let listener = summary.on_change(|latest, version| schedule_redraw());
 let (latest, version) = summary.changed(version).await;
 ```
 
-`version` counts changes. It lets you skip work when nothing changed, or wait for the change after one you've seen.
+`version` counts changes. It lets you skip work when nothing changed, or wait for the change after one you've seen. Over a connection, version 0 is `Ok(None)` until the server's first answer.
 
 Dropping every clone of a `LiveView` stops its updates.
 
@@ -151,6 +167,6 @@ let _listener = summary.on_change(move |latest, _| {
 });
 ```
 
-Callbacks run on the domain thread, so they should only hand work to the UI thread. They may read views and send commands. No lock is held while they run.
+Callbacks run on the domain thread, or the connection's, so they should only hand work to the UI thread. They may read views and send commands. No lock is held while they run.
 
 Next: [Policies](policies.md).

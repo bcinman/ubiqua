@@ -115,6 +115,19 @@ error[E0277]: a `DoorId` source can't key a view keyed by `HouseId`
 error[E0277]: `Log` has no `impl Apply`
 ```
 
+## A view with `rejects(..)` but no `Validate`
+
+```rust
+#[view(key = DoorId, from(Door(Closed)), rejects(NotYours))]
+pub struct Log;
+// no impl Validate for Log
+```
+
+```text
+error[E0277]: `Log` declares `rejects(..)` but has no `impl Validate`
+  implement `Validate` for `Log`, or remove its `rejects(..)`
+```
+
 ## A command or view the Api doesn't list
 
 ```rust

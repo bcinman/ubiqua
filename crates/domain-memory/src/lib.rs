@@ -18,11 +18,11 @@ pub use calls::StubbedCall;
 pub use policies::{PolicyCx, PolicyError, React};
 pub use schedules::{ScheduleError, UnscheduleError};
 pub use store::{Commit, EntryRow, EventRow, KeyRow, ReceiptRow, ScheduleRow, Store, StoreError, ViewRows};
-pub use views::{Feed, Recv, Subscription, ViewReader, Watch};
+pub use views::{Feed, Publisher, Recv, Subscription, ViewReader, Watch, channel};
 
 use domain::{
-    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, Cx, Envelope, Evolve, Handles, MaybeSend, MaybeSync,
-    Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
+    Aggregate, AggregateId, Apply, Command, CommandId, Consumes, CurrentActor, Cx, Envelope, Evolve, Handles,
+    MaybeSend, MaybeSync, Model, Receipt, Registry, SendError, Source, Sources, StreamId, Timestamp,
 };
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
@@ -247,15 +247,32 @@ impl Memory {
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
+        self.send_as(None, id, command, command_id)
+    }
+
+    /// Like [`send_with_id`](Self::send_with_id), on behalf of `actor`: `decide` reads it with
+    /// [`Cx::actor`]. A retry returns the first receipt, whoever sends it.
+    pub fn send_as<C>(
+        &self,
+        actor: Option<&CurrentActor>,
+        id: &C::Target,
+        command: C,
+        command_id: impl Into<CommandId>,
+    ) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
         let command_id = command_id.into();
         let stream = StreamId::of::<AggregateOf<C::Target>>(id);
-        let receipt = self.send_locked(id, command, command_id, stream)?;
+        let receipt = self.send_locked(actor, id, command, command_id, stream)?;
         self.deliver::<AggregateOf<C::Target>>();
         Ok(receipt)
     }
 
     fn send_locked<C>(
         &self,
+        actor: Option<&CurrentActor>,
         id: &C::Target,
         command: C,
         command_id: CommandId,
@@ -281,7 +298,7 @@ impl Memory {
         }
 
         let at = (self.clock)();
-        let cx = Cx::new(at, command_id.clone());
+        let cx = Cx::new(at, command_id.clone()).with_actor(actor.cloned());
         let events = <AggregateOf<C::Target> as domain::Decide<C>>::decide(&instance.state, &command, &cx)
             .map_err(SendError::Rejected)?;
 

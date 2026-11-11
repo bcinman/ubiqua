@@ -44,14 +44,14 @@ pub struct MoneyWithdrawn {
     pub balance_after: u64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InsufficientFunds {
     pub balance: u64,
     pub requested: u64,
 }
 ```
 
-Events are stored, so they derive `Serialize` and `Deserialize`. So do replies and view state.
+Events are stored and rejections cross the network, so they derive `Serialize` and `Deserialize`. So do commands, replies and view state.
 
 `OpenAccount` and `DepositMoney` follow the same shape: see [`commands.rs`](../examples/bank/src/commands.rs).
 

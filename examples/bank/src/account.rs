@@ -44,12 +44,21 @@ fn open(state: &AccountState) -> Result<u64, NotOpen> {
     }
 }
 
+fn owner(state: &AccountState) -> Option<&str> {
+    match state {
+        AccountState::Open { owner, .. } => Some(owner),
+        AccountState::Unopened => None,
+    }
+}
+
 fn balance(state: &AccountState) -> Balance {
     Balance { balance: open(state).unwrap_or(0) }
 }
 
 impl Decide<OpenAccount> for Account {
-    fn decide(state: &AccountState, cmd: &OpenAccount, _: &Cx) -> Decision<OpenAccount> {
+    fn decide(state: &AccountState, cmd: &OpenAccount, cx: &Cx) -> Decision<OpenAccount> {
+        // Signed-in users open accounts in their own name.
+        must_own(cx.actor::<User>(), Some(&cmd.owner))?;
         match state {
             AccountState::Unopened => Ok(vec![AccountOpened { owner: cmd.owner.clone() }.into()]),
             AccountState::Open { .. } => Err(AlreadyOpen.into()),
@@ -71,8 +80,9 @@ impl Decide<DepositMoney> for Account {
 }
 
 impl Decide<WithdrawMoney> for Account {
-    fn decide(state: &AccountState, cmd: &WithdrawMoney, _: &Cx) -> Decision<WithdrawMoney> {
+    fn decide(state: &AccountState, cmd: &WithdrawMoney, cx: &Cx) -> Decision<WithdrawMoney> {
         let balance = open(state)?;
+        must_own(cx.actor::<User>(), owner(state))?;
         if matches!(state, AccountState::Open { frozen: true, .. }) {
             return Err(Frozen.into());
         }

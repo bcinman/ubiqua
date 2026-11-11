@@ -19,7 +19,7 @@ struct Switched {
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Smashed;
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Broken;
 
 #[derive(Clone, Debug, Default)]

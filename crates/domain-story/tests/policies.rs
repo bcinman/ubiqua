@@ -75,7 +75,7 @@ pub struct Frozen;
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Thawed;
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlreadyOpen;
 
 #[derive(Clone, Debug, Default)]
@@ -147,7 +147,7 @@ pub struct Score {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Risk(u32);
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Blocked;
 
 #[derive(ExternalSystem)]

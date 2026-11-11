@@ -191,10 +191,11 @@ fn aggregate(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..), version = N)]`
+/// `#[view(key = Key, from(Source(Event, ..), ..), state = State, events(..), key_of(Source, ..), rejects(..), version = N)]`
 ///
 /// Generates `<Name>Input` (the events it reads), `<Name>Event` when `events(..)` is given,
-/// `impl View`, and `impl Consumes` per source. `state` defaults to `()`. A source listed in
+/// `<Name>Rejection`, `impl View`, and `impl Consumes` per source. With `rejects(..)` you implement
+/// `Validate`; without, every read is allowed. `state` defaults to `()`. A source listed in
 /// `key_of(..)` is routed by `impl KeyOf<Source>`; any other source's id must be the key.
 #[proc_macro_derive(View, attributes(view))]
 pub fn derive_view(input: TokenStream) -> TokenStream {
@@ -209,7 +210,8 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
     model(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// `#[api(commands(..), views(..))]`: `impl Api`, plus `Sends` and `Reads` for each one listed.
+/// `#[api(commands(..), views(..))]`: `impl Api`, registering each one listed, plus `Sends` and
+/// `Reads` for each.
 #[proc_macro_derive(Api, attributes(api))]
 pub fn derive_api(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -233,6 +235,11 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
     Ok(quote! {
         impl ::domain::Api for #name {
             const NAME: &'static str = #tag;
+
+            fn register<__R: ::domain::ApiRegistry>(registry: &mut __R) {
+                #( registry.command::<#commands>(); )*
+                #( registry.view::<#views>(); )*
+            }
         }
         #( impl ::domain::Sends<#commands> for #name {} )*
         #( impl ::domain::Reads<#views> for #name {} )*
@@ -242,7 +249,7 @@ fn api(input: &DeriveInput) -> syn::Result<Tokens> {
 fn view(input: &DeriveInput) -> syn::Result<Tokens> {
     let name = &input.ident;
     let (mut key, mut state, mut sources, mut events, mut key_of) = (None, None, Vec::new(), None, Vec::new());
-    let mut version = None;
+    let (mut version, mut rejects) = (None, Vec::new());
     parse_attr(input, "view", |meta| {
         if meta.path.is_ident("key") {
             key = Some(meta.value()?.parse::<Type>()?);
@@ -256,8 +263,10 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             key_of = paths(&meta)?;
         } else if meta.path.is_ident("version") {
             version = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse::<u64>()?);
+        } else if meta.path.is_ident("rejects") {
+            rejects = paths(&meta)?;
         } else {
-            return Err(meta.error("expected `key`, `from`, `state`, `events`, `key_of` or `version`"));
+            return Err(meta.error("expected `key`, `from`, `state`, `events`, `key_of`, `rejects` or `version`"));
         }
         Ok(())
     })?;
@@ -318,9 +327,31 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
         }
     });
 
+    let rejection_enum = format_ident!("{}Rejection", name);
+    let rejection_doc = format!("Why a read of `{name}` may be refused.");
+    let rejection_union = union(&input.vis, &rejection_enum, &rejects, &rejection_doc, Kind::Rejections);
+    // Without `rejects(..)` a view can't refuse anyone, so every read is allowed.
+    let validate = if rejects.is_empty() {
+        quote! {
+            impl ::domain::Validate for #name {
+                fn validate(
+                    _: &::domain::ReadCx<'_>,
+                    _: &#key,
+                    _: ::std::option::Option<&#state>,
+                ) -> ::std::result::Result<(), #rejection_enum> {
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    } else {
+        quote!(const _: () = { #[allow(dead_code)] fn validates() { ::domain::__assert_validate::<#name>(); } };)
+    };
+
     Ok(quote! {
         #input_union
         #event_union
+        #rejection_union
+        #validate
 
         impl ::domain::View for #name {
             const NAME: &'static str = #tag;
@@ -329,6 +360,7 @@ fn view(input: &DeriveInput) -> syn::Result<Tokens> {
             type State = #state;
             type Input = #input_enum;
             type Event = #event_ty;
+            type Rejection = #rejection_enum;
 
             fn sources<__S: ::domain::Sources<Self>>(sources: &mut __S) {
                 #( sources.source::<#source_paths>(); )*
@@ -605,18 +637,12 @@ fn union(vis: &Visibility, name: &Ident, members: &[Path], doc: &str, kind: Kind
             impl ::std::error::Error for #name {}
         },
     };
-    // Event sets are stored, so they serialize: `{"MoneyDeposited": {..}}`.
-    let serde = match kind {
-        Kind::Events => quote! {
-            #[derive(::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
-            #[serde(crate = "::domain::__private::serde")]
-        },
-        Kind::Rejections => quote!(),
-    };
+    // Events are stored and rejections cross the network, so both serialize: `{"MoneyDeposited": {..}}`.
     quote! {
         #[doc = #doc]
         #[derive(::std::clone::Clone, ::std::fmt::Debug, ::std::cmp::PartialEq)]
-        #serde
+        #[derive(::domain::__private::serde::Serialize, ::domain::__private::serde::Deserialize)]
+        #[serde(crate = "::domain::__private::serde")]
         #vis enum #name {
             #( #variants(#members), )*
         }

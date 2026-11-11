@@ -17,10 +17,10 @@
 //! #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 //! pub struct Opened;
 //!
-//! #[derive(Rejection, Clone, Debug, PartialEq)]
+//! #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 //! pub struct Jammed;
 //!
-//! #[derive(Rejection, Clone, Debug, PartialEq)]
+//! #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 //! pub struct Locked;
 //!
 //! #[derive(Aggregate)]
@@ -49,7 +49,7 @@
 //! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Opened;
-//! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Jammed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
 //! fn decide() -> Decision<Close> {
 //!     Ok(vec![Opened.into()])
 //! }
@@ -62,8 +62,8 @@
 //! # domain::id!(pub struct DoorId;);
 //! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed), rejects(Jammed))] pub struct Close;
 //! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
-//! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Jammed;
-//! # #[derive(Rejection, Clone, Debug, PartialEq)] pub struct Locked;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Jammed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Locked;
 //! fn decide() -> Decision<Close> {
 //!     Err(Locked.into())
 //! }
@@ -258,4 +258,22 @@
 //! pub struct DoorApi;
 //!
 //! client_can_read::<DoorApi>();
+//! ```
+//!
+//! A view declares `rejects(..)` but doesn't say who it refuses:
+//!
+//! ```compile_fail,E0277
+//! # use domain::*;
+//! # domain::id!(pub struct DoorId;);
+//! # #[derive(Command, Debug, serde::Serialize, serde::Deserialize)] #[command(target = DoorId, events(Closed))] pub struct Close;
+//! # #[derive(Event, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct Closed;
+//! # #[derive(Rejection, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] pub struct NotYours;
+//! # #[derive(Aggregate)] #[aggregate(id = DoorId, state = bool, events(Closed), commands(Close))] pub struct Door;
+//! # impl Evolve for Door { fn evolve(_: &mut bool, _: &DoorEvent) {} }
+//! # impl Decide<Close> for Door { fn decide(_: &bool, _: &Close, _: &Cx) -> Decision<Close> { Ok(vec![]) } fn reply(_: &bool) {} }
+//! #[derive(View)]
+//! #[view(key = DoorId, from(Door(Closed)), rejects(NotYours))]
+//! pub struct Log;
+//! # impl Apply for Log { fn apply(_: &mut (), _: LogInput, _: &mut ViewCx<Self>) {} }
+//! // no impl Validate for Log
 //! ```

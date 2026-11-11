@@ -109,3 +109,15 @@ fn small_withdrawals_are_not_scored() {
         .advance(FREEZE_FOR)
         .then_none(&a1());
 }
+
+#[test]
+fn only_the_owner_may_withdraw() {
+    Story::new()
+        .given(&a1(), [AccountEvent::from(opened()), MoneyDeposited { amount: 100, balance_after: 100 }.into()])
+        .acting_as(User("kim".into()))
+        .when(&a1(), WithdrawMoney { amount: 10 })
+        .rejected(NotOwner)
+        .acting_as(User("sam".into()))
+        .when(&a1(), WithdrawMoney { amount: 10 })
+        .then(&a1(), [MoneyWithdrawn { amount: 10, balance_after: 90 }]);
+}

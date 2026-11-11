@@ -237,6 +237,17 @@ Story::new()
 
 See [Stories](stories.md).
 
+## Decide who may read it
+
+```rust
+#[view(key = AccountId, from(Account(..)), state = Summary, rejects(NotOwner))]
+pub struct AccountSummary;
+
+impl Validate for AccountSummary { .. }
+```
+
+See [Who is asking](sessions.md#guard-a-view).
+
 ## Guarantees
 
 - A view applies each source's events in the order they were recorded, each once.

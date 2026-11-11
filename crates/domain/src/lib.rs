@@ -6,12 +6,14 @@
 
 extern crate self as domain;
 
+mod actor;
 mod api;
 mod external;
 mod maybe;
 mod policy;
 mod values;
 mod view;
+pub mod wire;
 
 #[doc(hidden)]
 pub mod compile_checks;
@@ -26,7 +28,8 @@ pub mod __private {
     pub use serde;
 }
 
-pub use api::{Api, Reads, Sends, SentVia};
+pub use actor::{CurrentActor, ReadCx};
+pub use api::{Api, ApiRegistry, Reads, Sends, SentVia};
 pub use domain_macros::{Aggregate, Api, Call, Command, Event, ExternalSystem, Model, Policy, Rejection, View};
 pub use external::{Adapter, Answer, Answered, Call, CallError, Calls, ExternalSystem};
 pub use maybe::{MaybeSend, MaybeSync};
@@ -34,7 +37,7 @@ pub use policy::{Policy, PolicySources, Reacts};
 pub use values::{CommandId, Envelope, Receipt, SendError, StreamId, Timestamp};
 pub use view::{
     Apply, Consumes, Cursor, Entry, Frame, KeyFrom, KeyOf, Member, Model, NotCaughtUp, Origin, Position, Registry,
-    Snapshot, Source, SourcePayload, Sources, View, ViewCx,
+    Snapshot, Source, SourcePayload, Sources, Validate, View, ViewCx,
 };
 
 /// A fact a command recorded. Derive it with `#[derive(Event)]`.
@@ -43,8 +46,11 @@ pub trait Event: Clone + Debug + PartialEq + Serialize + DeserializeOwned + Mayb
     const NAME: &'static str;
 }
 
-/// A reason a command was refused. Derive it with `#[derive(Rejection)]`.
-pub trait Rejection: Clone + Debug + PartialEq + Display + std::error::Error + MaybeSend + MaybeSync + 'static {
+/// A reason a command or a read was refused. Derive it with `#[derive(Rejection)]`.
+/// It serializes, so a client across a network gets it by name.
+pub trait Rejection:
+    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
+{
     const NAME: &'static str;
 }
 
@@ -56,7 +62,7 @@ pub trait Events: Clone + Debug + PartialEq + Serialize + DeserializeOwned + May
 
 /// A set of rejections, as an enum with one variant per rejection. `#[derive(Command)]` generates these.
 pub trait Rejections:
-    Clone + Debug + PartialEq + Display + std::error::Error + MaybeSend + MaybeSync + 'static
+    Clone + Debug + PartialEq + Display + std::error::Error + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static
 {
     /// The `Rejection::NAME` of the variant.
     fn name(&self) -> &'static str;
@@ -155,11 +161,24 @@ where
 pub struct Cx {
     now: Timestamp,
     command_id: CommandId,
+    actor: Option<CurrentActor>,
 }
 
 impl Cx {
     pub fn new(now: Timestamp, command_id: CommandId) -> Self {
-        Self { now, command_id }
+        Self { now, command_id, actor: None }
+    }
+
+    /// For hosts: who sent the command.
+    pub fn with_actor(mut self, actor: Option<CurrentActor>) -> Self {
+        self.actor = actor;
+        self
+    }
+
+    /// Who sent the command, if they're a `T`. `None` when nobody signed in, as for a policy, a
+    /// schedule, or code in the app.
+    pub fn actor<T: std::any::Any>(&self) -> Option<&T> {
+        self.actor.as_ref()?.get()
     }
 
     /// The time the command is decided. Its events record the same time.
@@ -231,3 +250,6 @@ pub fn __assert_evolve<A: Evolve>() {}
 
 #[doc(hidden)]
 pub fn __assert_apply<V: Apply>() {}
+
+#[doc(hidden)]
+pub fn __assert_validate<V: Validate>() {}

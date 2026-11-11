@@ -31,6 +31,7 @@ fn an_overdraft_is_rejected_with_the_evidence() {
 | `.policy(p)` | runs a policy |
 | `.call(call)` | a policy made exactly this call; answer with `.succeed(v)` or `.fail(e)` |
 | `.external(system, adapter)` | answers calls with a real adapter instead |
+| `.acting_as(user)` | sends the commands after it as `user`; see [Who is asking](sessions.md) |
 
 ## Success
 

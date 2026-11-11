@@ -1,12 +1,24 @@
 use crate::*;
-use domain::{Apply, Event, KeyOf, Origin, View, ViewCx};
+use domain::{Apply, Event, KeyOf, Origin, ReadCx, Validate, View, ViewCx};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Who owns an account and what's in it.
+/// Who owns an account and what's in it. Only its owner may read it.
 #[derive(View)]
-#[view(key = AccountId, from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)), state = Summary)]
+#[view(
+    key = AccountId,
+    from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
+    state = Summary,
+    rejects(NotOwner)
+)]
 pub struct AccountSummary;
+
+impl Validate for AccountSummary {
+    fn validate(cx: &ReadCx, _: &AccountId, summary: Option<&Summary>) -> Result<(), AccountSummaryRejection> {
+        // No owner yet reads as empty, so a new user can watch for their account to open.
+        Ok(must_own(cx.actor::<User>(), summary.and_then(|s| s.owner.as_deref()))?)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
@@ -30,9 +42,16 @@ impl Apply for AccountSummary {
     key = OwnerId,
     from(AccountSummary(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
     key_of(AccountSummary),
-    state = Holdings
+    state = Holdings,
+    rejects(NotOwner)
 )]
 pub struct OwnerHoldings;
+
+impl Validate for OwnerHoldings {
+    fn validate(cx: &ReadCx, owner: &OwnerId, _: Option<&Holdings>) -> Result<(), OwnerHoldingsRejection> {
+        Ok(must_own(cx.actor::<User>(), Some(owner.as_str()))?)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Holdings {
@@ -59,10 +78,23 @@ impl Apply for OwnerHoldings {
     }
 }
 
-/// One line per movement of money.
+/// One line per movement of money. Only the account's owner may read it, so it keeps the owner.
 #[derive(View)]
-#[view(key = AccountId, from(Account(MoneyDeposited, MoneyWithdrawn)), events(StatementLine))]
+#[view(
+    key = AccountId,
+    from(Account(AccountOpened, MoneyDeposited, MoneyWithdrawn)),
+    state = Option<String>,
+    events(StatementLine),
+    rejects(NotOwner),
+    version = 1
+)]
 pub struct Statement;
+
+impl Validate for Statement {
+    fn validate(cx: &ReadCx, _: &AccountId, owner: Option<&Option<String>>) -> Result<(), StatementRejection> {
+        Ok(must_own(cx.actor::<User>(), owner.and_then(Option::as_deref))?)
+    }
+}
 
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatementLine {
@@ -78,8 +110,12 @@ pub enum LineKind {
 }
 
 impl Apply for Statement {
-    fn apply(_: &mut (), input: StatementInput, cx: &mut ViewCx<Self>) {
+    fn apply(owner: &mut Option<String>, input: StatementInput, cx: &mut ViewCx<Self>) {
         cx.emit(match input {
+            StatementInput::AccountOpened(e) => {
+                *owner = Some(e.owner);
+                return;
+            }
             StatementInput::MoneyDeposited(e) => {
                 StatementLine { kind: LineKind::Deposit, amount: e.amount, balance: e.balance_after }
             }

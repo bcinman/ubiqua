@@ -1,0 +1,9 @@
+[package]
+name = "domain-websocket"
+description = "WebSocket over std::net for domain-server and domain-client: the handshake and text messages, on plain threads."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sha1_smol = "1.0.1"

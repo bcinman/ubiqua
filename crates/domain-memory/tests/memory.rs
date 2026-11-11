@@ -22,7 +22,7 @@ struct Incremented {
     value_after: u64,
 }
 
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct TooHigh;
 
 #[derive(Aggregate)]

@@ -73,6 +73,7 @@ pub enum NotifyInput {
 | `call(call).await` | ask an outside system |
 | `schedule(&id, cmd, at)` | send a command later |
 | `schedule_with_id(&id, cmd, at, "id")` / `unschedule(&id, "id")` | a schedule you can cancel |
+| `send_as(&actor, &id, cmd)` | send as someone, for a `decide` that checks [who is asking](sessions.md) |
 
 ## Running twice is safe
 
@@ -222,4 +223,4 @@ Story::new()
 
 See [Stories](stories.md#policies).
 
-Next: [Stories](stories.md).
+Next: [Who is asking](sessions.md).

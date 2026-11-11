@@ -7,8 +7,8 @@ use crate::store::{Store, StoreError, ViewRows};
 use crate::views::{Consumer, Delivery};
 use crate::{AggregateOf, Memory, Registrar, ScheduleError, UnscheduleError, lock, reason};
 use domain::{
-    AggregateId, Answered, Call, Command, CommandId, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects, Policy,
-    PolicySources, Reacts, Receipt, SendError, Source, SourcePayload, StreamId, Timestamp,
+    AggregateId, Answered, Call, Command, CommandId, CurrentActor, Evolve, Handles, MaybeSend, MaybeSync, NeverRejects,
+    Policy, PolicySources, Reacts, Receipt, SendError, Source, SourcePayload, StreamId, Timestamp,
 };
 use std::any::TypeId;
 use std::collections::{HashMap, VecDeque};
@@ -116,6 +116,21 @@ impl<P: Policy> PolicyCx<P> {
         AggregateOf<C::Target>: Handles<C>,
     {
         self.memory().send_with_id(id, command, self.next_command_id())
+    }
+
+    /// Like [`send`](Self::send), on behalf of `actor`, for a command whose `decide` checks who
+    /// sent it. A policy has no actor otherwise.
+    pub fn send_as<C>(
+        &self,
+        actor: &CurrentActor,
+        id: &C::Target,
+        command: C,
+    ) -> Result<Receipt<C>, SendError<C::Rejection>>
+    where
+        C: Command,
+        AggregateOf<C::Target>: Handles<C>,
+    {
+        self.memory().send_as(Some(actor), id, command, self.next_command_id())
     }
 
     /// Sends `command` to `id` at `at`, under the next derived id. A second run after it fired

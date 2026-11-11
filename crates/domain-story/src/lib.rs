@@ -6,8 +6,8 @@
 //! adapter wait until the story answers them.
 
 use domain::{
-    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, Cursor, Evolve, Handles, Model, Receipt,
-    SendError, StreamId, Timestamp,
+    Adapter, Aggregate, AggregateId, Apply, Call, CallError, Command, CurrentActor, Cursor, Evolve, Handles, Model,
+    Receipt, SendError, StreamId, Timestamp,
 };
 use domain_memory::{Memory, React, StubbedCall};
 use std::collections::HashMap;
@@ -25,6 +25,8 @@ pub struct Story {
     clock: Arc<AtomicU64>,
     /// How far each stream's events have been accounted for.
     seen: HashMap<StreamId, u64>,
+    /// Who sends the commands, from `acting_as`.
+    actor: Option<CurrentActor>,
 }
 
 impl Default for Story {
@@ -39,7 +41,7 @@ impl Story {
         let clock = Arc::new(AtomicU64::new(0));
         let now = clock.clone();
         let memory = Memory::with_clock(move || Timestamp::from_millis(now.load(Ordering::Relaxed))).stub_calls();
-        Self { memory: Arc::new(memory), clock, seen: HashMap::new() }
+        Self { memory: Arc::new(memory), clock, seen: HashMap::new(), actor: None }
     }
 
     /// Runs the model's views too, so `view` and `emitted` can check them.
@@ -58,9 +60,9 @@ impl Story {
     }
 
     fn build(self, f: impl FnOnce(Memory) -> Memory) -> Self {
-        let Story { memory, clock, seen } = self;
+        let Story { memory, clock, seen, actor } = self;
         let memory = Arc::try_unwrap(memory).unwrap_or_else(|_| panic!("story: set it up before `given` and `when`"));
-        Story { memory: Arc::new(f(memory)), clock, seen }
+        Story { memory: Arc::new(f(memory)), clock, seen, actor }
     }
 
     /// History: events already recorded on `id`, written without deciding any command.
@@ -94,13 +96,20 @@ impl Story {
         self.at(now)
     }
 
+    /// Sends the commands after it on behalf of `actor`, as a signed-in user would. `decide`
+    /// reads it with `cx.actor::<T>()`.
+    pub fn acting_as<T: std::any::Any + std::fmt::Debug + Send + Sync>(mut self, actor: T) -> Self {
+        self.actor = Some(CurrentActor::new(actor));
+        self
+    }
+
     /// Sends a command. Check what it did with the returned [`When`].
     pub fn when<C>(self, id: &C::Target, command: C) -> When<C>
     where
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
-        let outcome = self.memory.send(id, command);
+        let outcome = self.memory.send_as(self.actor.as_ref(), id, command, self.memory.new_command_id());
         self.run();
         When { story: self, outcome, checked_rejection: false, finished: false }
     }
@@ -243,6 +252,12 @@ impl<C: Command> When<C> {
     {
         self.finish();
         std::mem::take(&mut self.story).given(id, events)
+    }
+
+    /// Sends the commands after it on behalf of `actor`, after checking this one was accounted for.
+    pub fn acting_as<T: std::any::Any + std::fmt::Debug + Send + Sync>(mut self, actor: T) -> Story {
+        self.finish();
+        std::mem::take(&mut self.story).acting_as(actor)
     }
 
     /// Sends the next command, after checking this one was accounted for.

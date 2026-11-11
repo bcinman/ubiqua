@@ -13,7 +13,9 @@ domain-client = { path = "crates/domain-client" }
 domain-macros = { path = "crates/domain-macros" }
 domain-memory = { path = "crates/domain-memory" }
 domain-sqlite = { path = "crates/domain-sqlite" }
+domain-server = { path = "crates/domain-server" }
 domain-story = { path = "crates/domain-story" }
+domain-websocket = { path = "crates/domain-websocket" }
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

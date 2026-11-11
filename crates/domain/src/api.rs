@@ -1,10 +1,21 @@
 //! What a model publishes to its clients: the commands they may send and the views they may read.
 
-use crate::{Command, View};
+use crate::{AggregateId, Apply, Command, Handles, Validate, View};
 
 /// The commands and views a client may use. Derive it with `#[derive(Api)]`.
 pub trait Api: 'static {
     const NAME: &'static str;
+
+    /// Visits each command and view it lists, so a server can serve them.
+    fn register<R: ApiRegistry>(registry: &mut R);
+}
+
+/// Receives an Api's commands and views. Servers implement it.
+pub trait ApiRegistry {
+    fn command<C: Command>(&mut self)
+    where
+        <C::Target as AggregateId>::Aggregate: Handles<C>;
+    fn view<V: Apply + Validate>(&mut self);
 }
 
 /// The Api lets clients send `C`. `#[derive(Api)]` implements it for each of `commands(..)`.

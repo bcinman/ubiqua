@@ -55,7 +55,7 @@ Name events in the past tense. They're facts: `evolve` must accept them. They're
 ## A rejection
 
 ```rust
-#[derive(Rejection, Clone, Debug, PartialEq)]
+#[derive(Rejection, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InsufficientFunds {
     pub balance: u64,
     pub requested: u64,
@@ -65,7 +65,7 @@ assert_eq!(InsufficientFunds { balance: 50, requested: 80 }.to_string(),
            "InsufficientFunds { balance: 50, requested: 80 }");
 ```
 
-Carry what the caller needs to act on it. A rejection records nothing.
+Carry what the caller needs to act on it. A rejection records nothing. It serializes, so a client across a network gets it by name.
 
 ## A fact that can't be refused
 

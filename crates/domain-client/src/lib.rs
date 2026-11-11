@@ -4,11 +4,13 @@
 //! (check it each frame, or `.await` it on any executor) or through a callback, and changing state
 //! arrives as a [`LiveView`] (read it each frame, get callbacks, or await changes).
 //!
-//! Today the client runs the model in the same process, on a `Memory`. A client for a model on a
-//! server will have the same methods.
+//! The model can run in the same process ([`Client::in_process`]) or on a server
+//! ([`Client::connect`]). The methods are the same either way.
 
 mod live;
 mod pending;
+#[cfg(not(target_arch = "wasm32"))]
+mod remote;
 
 #[doc(hidden)]
 pub mod compile_checks;
@@ -18,10 +20,10 @@ pub use live::{Changed, Listener, LiveView};
 pub use pending::Pending;
 
 use domain::{
-    AggregateId, Api, Apply, Command, CommandId, Cursor, Entry, Handles, MaybeSend, NotCaughtUp, Position, Reads,
-    Receipt, SendError, SentVia, Snapshot,
+    AggregateId, Api, Apply, Command, CommandId, CurrentActor, Cursor, Entry, Frame, Handles, MaybeSend, MaybeSync,
+    NotCaughtUp, Position, ReadCx, Reads, Receipt, SendError, SentVia, Snapshot, Validate, View,
 };
-use domain_memory::{Memory, ViewReader, Watch};
+use domain_memory::{Memory, Publisher, ViewReader, Watch};
 use live::Shared;
 use pending::{lock, pending};
 use std::fmt;
@@ -34,17 +36,34 @@ type AggregateOf<I> = <I as AggregateId>::Aggregate;
 /// What a send resolves to: the receipt, or why it didn't commit.
 pub type Sent<C> = Result<Receipt<C>, SendError<<C as Command>::Rejection>>;
 
+/// What a read of `V` resolves to: a `T`, or why the read failed.
+pub type ReadResult<V, T> = Result<T, ReadError<<V as View>::Rejection>>;
+
+/// What reading one key of `V` resolves to: its state (`None` before its first event), or why
+/// the read failed.
+pub type Read<V> = ReadResult<V, Option<<V as View>::State>>;
+
 /// A typed client for the Api `A`. It sends only the commands `A` lists, and reads only its views.
 pub struct Client<A: Api> {
-    memory: Arc<Memory>,
-    runner: Runner,
+    backend: Backend,
+    actor: Option<CurrentActor>,
     _api: PhantomData<fn() -> A>,
 }
 
 impl<A: Api> Clone for Client<A> {
     fn clone(&self) -> Self {
-        Self { memory: self.memory.clone(), runner: self.runner.clone(), _api: PhantomData }
+        Self { backend: self.backend.clone(), actor: self.actor.clone(), _api: PhantomData }
     }
+}
+
+#[derive(Clone)]
+enum Backend {
+    Local {
+        memory: Arc<Memory>,
+        runner: Runner,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    Remote(Arc<remote::Remote>),
 }
 
 #[derive(Clone)]
@@ -58,6 +77,23 @@ enum Runner {
 
 #[cfg(not(target_arch = "wasm32"))]
 type Job = Box<dyn FnOnce(&Memory) + Send>;
+
+/// How a client is connected to its model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    Connecting,
+    /// In process, or connected to the server.
+    Connected,
+    /// The connection dropped or couldn't be made; it's trying again.
+    Reconnecting {
+        reason: String,
+    },
+    /// The server turned the client away with this HTTP status, such as 401 for a token it
+    /// doesn't accept. It won't try again.
+    Refused {
+        status: u16,
+    },
+}
 
 impl<A: Api> Client<A> {
     /// Runs commands on a domain thread of their own, so the UI thread never waits on one. The
@@ -99,7 +135,7 @@ impl<A: Api> Client<A> {
                     }
                 })
                 .expect("spawn the domain thread");
-            Self { memory, runner: Runner::Thread(jobs), _api: PhantomData }
+            Self::local(memory, Runner::Thread(jobs))
         }
         #[cfg(target_arch = "wasm32")]
         Self::inline(memory)
@@ -115,7 +151,46 @@ impl<A: Api> Client<A> {
                 memory.run_due();
             }
         });
-        Self { memory, runner: Runner::Inline, _api: PhantomData }
+        Self::local(memory, Runner::Inline)
+    }
+
+    fn local(memory: Arc<Memory>, runner: Runner) -> Self {
+        Self { backend: Backend::Local { memory, runner }, actor: None, _api: PhantomData }
+    }
+
+    /// Talks to a model a `domain-server` serves at `url`, such as `ws://127.0.0.1:7878/`. The
+    /// server signs the connection in with `token`, if it checks sessions.
+    ///
+    /// Returns at once and connects in the background, reconnecting whenever the connection
+    /// drops. Sends and reads made while it's down wait for it; those it was carrying when it
+    /// dropped fail with `Unavailable`. Live views and feeds carry on after a reconnect. Native
+    /// only for now.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn connect(url: &str, token: Option<&str>) -> Self {
+        Self { backend: Backend::Remote(remote::Remote::start(url, token)), actor: None, _api: PhantomData }
+    }
+
+    /// The same client, sending and reading on behalf of `actor`, as a signed-in user would.
+    /// `decide` reads it with `cx.actor::<T>()`, and views' `validate` with `cx.actor::<T>()`.
+    ///
+    /// # Panics
+    /// On a client from [`connect`](Self::connect): the server decides who that is, from its token.
+    pub fn acting_as<T: std::any::Any + fmt::Debug + MaybeSend + MaybeSync>(&self, actor: T) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(
+            matches!(self.backend, Backend::Local { .. }),
+            "a connected client acts as whoever its token signs in; pass the token to `connect`"
+        );
+        Self { actor: Some(CurrentActor::new(actor)), ..self.clone() }
+    }
+
+    /// How the client is connected. Always `Connected` in process.
+    pub fn connection(&self) -> LiveView<Connection> {
+        match &self.backend {
+            Backend::Local { .. } => LiveView::new(Shared::new(Connection::Connected), Arc::new(())),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Remote(remote) => remote.connection(),
+        }
     }
 
     /// Sends a command. Retrying after [`SendError::Unavailable`] with
@@ -126,7 +201,7 @@ impl<A: Api> Client<A> {
         C: SentVia<A>,
         AggregateOf<C::Target>: Handles<C>,
     {
-        self.send_with_id(id, command, self.memory.new_command_id())
+        self.send_with_id(id, command, self.new_command_id())
     }
 
     /// Like [`send`](Self::send), under your own command id.
@@ -142,22 +217,37 @@ impl<A: Api> Client<A> {
     }
 
     /// Sends a command and calls `then` with the result, on the thread that ran it: the domain
-    /// thread for [`in_process`](Self::in_process). For UIs whose handlers can't await.
+    /// thread for [`in_process`](Self::in_process), the connection's thread for
+    /// [`connect`](Self::connect). For UIs whose handlers can't await.
     pub fn send_then<C>(&self, id: &C::Target, command: C, then: impl FnOnce(Sent<C>) + MaybeSend + 'static)
     where
         C: Command,
         C: SentVia<A>,
         AggregateOf<C::Target>: Handles<C>,
     {
-        self.run(id, command, self.memory.new_command_id(), then);
+        self.run(id, command, self.new_command_id(), then);
+    }
+
+    /// A command id no other command has used.
+    pub fn new_command_id(&self) -> CommandId {
+        match &self.backend {
+            Backend::Local { memory, .. } => memory.new_command_id(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Remote(remote) => remote.new_command_id(),
+        }
     }
 
     /// Reads the view `V`.
-    pub fn view<V: Apply>(&self) -> ClientView<V>
+    pub fn view<V: Apply + Validate>(&self) -> ClientView<V>
     where
         A: Reads<V>,
     {
-        ClientView { reader: self.memory.view::<V>() }
+        let inner = match &self.backend {
+            Backend::Local { memory, .. } => ViewInner::Local { reader: memory.view::<V>(), actor: self.actor.clone() },
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Remote(remote) => ViewInner::Remote(remote.clone()),
+        };
+        ClientView { inner }
     }
 
     fn run<C>(
@@ -170,15 +260,20 @@ impl<A: Api> Client<A> {
         C: Command,
         AggregateOf<C::Target>: Handles<C>,
     {
-        let id = id.clone();
+        let (memory, runner) = match &self.backend {
+            Backend::Local { memory, runner } => (memory, runner),
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Remote(remote) => return remote.send(id, command, command_id, then),
+        };
+        let (id, actor) = (id.clone(), self.actor.clone());
         let job = move |memory: &Memory| {
             let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                memory.send_with_id(&id, command, command_id.clone())
+                memory.send_as(actor.as_ref(), &id, command, command_id.clone())
             }));
             then(sent.unwrap_or_else(|panic| Err(SendError::Unavailable { command_id, reason: reason(&*panic) })));
         };
-        match &self.runner {
-            Runner::Inline => job(&self.memory),
+        match runner {
+            Runner::Inline => job(memory),
             #[cfg(not(target_arch = "wasm32"))]
             Runner::Thread(jobs) => jobs.send(Box::new(job)).expect("the domain thread outlives its clients"),
         }
@@ -190,95 +285,199 @@ fn reason(panic: &(dyn std::any::Any + Send)) -> String {
     format!("the command panicked: {}", message.unwrap_or("no message"))
 }
 
-/// Why a read failed.
+/// Why a read failed. `R` is the view's rejection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ReadError {
+pub enum ReadError<R> {
     /// The view hasn't applied the position the read asked for.
     NotCaughtUp(NotCaughtUp),
+    /// The view's `validate` refused the reader.
+    Rejected(R),
+    /// The server couldn't be reached, or failed.
+    Unavailable(String),
 }
 
-impl fmt::Display for ReadError {
+impl<R: fmt::Display> fmt::Display for ReadError<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReadError::NotCaughtUp(e) => e.fmt(f),
+            ReadError::Rejected(r) => write!(f, "rejected: {r}"),
+            ReadError::Unavailable(reason) => write!(f, "unavailable: {reason}"),
         }
     }
 }
 
-impl std::error::Error for ReadError {}
+impl<R: fmt::Debug + fmt::Display> std::error::Error for ReadError<R> {}
 
 /// Reads one view through a [`Client`].
 pub struct ClientView<V: Apply> {
-    reader: ViewReader<V>,
+    inner: ViewInner<V>,
+}
+
+enum ViewInner<V: Apply> {
+    Local {
+        reader: ViewReader<V>,
+        actor: Option<CurrentActor>,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    Remote(Arc<remote::Remote>),
 }
 
 impl<V: Apply> Clone for ClientView<V> {
     fn clone(&self) -> Self {
-        Self { reader: self.reader.clone() }
+        let inner = match &self.inner {
+            ViewInner::Local { reader, actor } => ViewInner::Local { reader: reader.clone(), actor: actor.clone() },
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => ViewInner::Remote(remote.clone()),
+        };
+        Self { inner }
     }
 }
 
-impl<V: Apply> ClientView<V> {
+impl<V: Apply + Validate> ClientView<V> {
     /// The key's state, or `None` before its first event.
-    pub fn get(&self, key: &V::Key) -> Pending<Result<Option<V::State>, ReadError>> {
-        Pending::ready(Ok(self.reader.get(key)))
+    pub fn get(&self, key: &V::Key) -> Pending<Read<V>> {
+        match &self.inner {
+            ViewInner::Local { reader, actor } => Pending::ready(checked::<V>(actor, key, reader.get(key))),
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.get::<V>(key, None),
+        }
     }
 
     /// The key's state, once the view has applied `position`, such as a command's receipt.
-    pub fn get_at_least(
-        &self,
-        key: &V::Key,
-        position: impl Into<Position>,
-    ) -> Pending<Result<Option<V::State>, ReadError>> {
-        let read = self.reader.at_least(position).map(|reader| reader.get(key)).map_err(ReadError::NotCaughtUp);
-        Pending::ready(read)
+    pub fn get_at_least(&self, key: &V::Key, position: impl Into<Position>) -> Pending<Read<V>> {
+        match &self.inner {
+            ViewInner::Local { reader, actor } => Pending::ready(match reader.at_least(position) {
+                Ok(reader) => checked::<V>(actor, key, reader.get(key)),
+                Err(e) => Err(ReadError::NotCaughtUp(e)),
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.get::<V>(key, Some(position.into())),
+        }
     }
 
     /// The key's state with the cursor it's valid at. Follow it with [`events`](Self::events).
-    pub fn snapshot(&self, key: &V::Key) -> Pending<Result<Snapshot<V>, ReadError>> {
-        Pending::ready(Ok(self.reader.snapshot(key)))
+    pub fn snapshot(&self, key: &V::Key) -> Pending<ReadResult<V, Snapshot<V>>> {
+        match &self.inner {
+            ViewInner::Local { reader, actor } => {
+                let snapshot = reader.snapshot(key);
+                Pending::ready(validate::<V>(actor.as_ref(), key, snapshot.state.as_ref()).map(|()| snapshot))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.snapshot::<V>(key),
+        }
     }
 
     /// Up to `take` of the key's emitted events after `after`, oldest first.
-    pub fn list(&self, key: &V::Key, after: Cursor, take: usize) -> Pending<Result<Vec<Entry<V>>, ReadError>> {
-        Pending::ready(Ok(self.reader.list(key, after, take)))
+    pub fn list(&self, key: &V::Key, after: Cursor, take: usize) -> Pending<ReadResult<V, Vec<Entry<V>>>> {
+        match &self.inner {
+            ViewInner::Local { reader, actor } => Pending::ready(
+                validate::<V>(actor.as_ref(), key, reader.get(key).as_ref()).map(|()| reader.list(key, after, take)),
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.list::<V>(key, after, take),
+        }
     }
 
-    /// The key's emitted events after `after`, then `CaughtUp`, then new ones as they're recorded.
+    /// The key's emitted events after `after`, then `CaughtUp`, then new ones as they're
+    /// recorded. If `validate` refuses the reader, now or on a later entry, the feed ends with
+    /// `Frame::Rejected`. Over a connection, it carries on from the last entry after a
+    /// reconnect, with another `CaughtUp`.
     pub fn events(&self, key: &V::Key, after: Cursor) -> Feed<V> {
-        self.reader.events(key, after)
+        match &self.inner {
+            ViewInner::Local { reader, actor } => {
+                if let Err(ReadError::Rejected(r)) = validate::<V>(actor.as_ref(), key, reader.get(key).as_ref()) {
+                    let (publisher, feed) = domain_memory::channel::<Frame<V>>(());
+                    publisher.push(Frame::Rejected(r));
+                    return feed;
+                }
+                let relay = Arc::new(FeedRelay {
+                    feed: reader.events(key, after),
+                    order: Mutex::new(()),
+                    out: Mutex::new(None),
+                    key: key.clone(),
+                    actor: actor.clone(),
+                    ended: AtomicBool::new(false),
+                });
+                // The caller's feed keeps the relay alive; the relay fills it.
+                let (publisher, out) = domain_memory::channel::<Frame<V>>(relay.clone());
+                *lock(&relay.out) = Some(publisher);
+                let weak = Arc::downgrade(&relay);
+                relay.feed.notify(move || {
+                    if let Some(relay) = weak.upgrade() {
+                        relay.pump();
+                    }
+                });
+                out
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.events::<V>(key, after),
+        }
     }
 
-    /// The key's state, kept current. It starts at the state now: `None` before the key's first event.
-    pub fn live(&self, key: &V::Key) -> LiveView<Option<V::State>> {
-        let watch = self.reader.watch(key);
-        let initial = watch.try_next().expect("a watch starts with the state now").state;
-        let target = Shared::new(initial);
-        let pump =
-            Arc::new(Pump { watch: Mutex::new(watch), target: target.clone(), requested: AtomicBool::new(false) });
-        let live = LiveView::new(target, pump.clone());
-        // Weak, so the watch doesn't keep its own pump alive once the LiveView is gone.
-        let weak = Arc::downgrade(&pump);
-        lock(&pump.watch).notify(move || {
-            if let Some(pump) = weak.upgrade() {
-                pump.pump();
+    /// The key's state, kept current: what [`get`](Self::get) returns, as it changes. If
+    /// `validate` refuses the reader, now or after a change, it holds the rejection and stops.
+    ///
+    /// In process it starts at the state now. Over a connection it starts at `Ok(None)`, version
+    /// 0, until the server's first answer arrives.
+    pub fn live(&self, key: &V::Key) -> LiveView<Read<V>> {
+        match &self.inner {
+            ViewInner::Local { reader, actor } => {
+                let watch = reader.watch(key);
+                let initial = watch.try_next().expect("a watch starts with the state now").state;
+                let initial = checked::<V>(actor, key, initial);
+                let ended = AtomicBool::new(initial.is_err());
+                let target = Shared::new(initial);
+                let pump = Arc::new(Pump {
+                    watch: Mutex::new(watch),
+                    target: target.clone(),
+                    requested: AtomicBool::new(false),
+                    key: key.clone(),
+                    actor: actor.clone(),
+                    ended,
+                });
+                let live = LiveView::new(target, pump.clone());
+                // Weak, so the watch doesn't keep its own pump alive once the LiveView is gone.
+                let weak = Arc::downgrade(&pump);
+                lock(&pump.watch).notify(move || {
+                    if let Some(pump) = weak.upgrade() {
+                        pump.pump();
+                    }
+                });
+                live
             }
-        });
-        live
+            #[cfg(not(target_arch = "wasm32"))]
+            ViewInner::Remote(remote) => remote.watch::<V>(key),
+        }
     }
+}
+
+fn validate<V: Validate>(
+    actor: Option<&CurrentActor>,
+    key: &V::Key,
+    state: Option<&V::State>,
+) -> Result<(), ReadError<V::Rejection>> {
+    V::validate(&ReadCx::new(actor), key, state).map_err(ReadError::Rejected)
+}
+
+fn checked<V: Validate>(actor: &Option<CurrentActor>, key: &V::Key, state: Option<V::State>) -> Read<V> {
+    validate::<V>(actor.as_ref(), key, state.as_ref()).map(|()| state)
 }
 
 /// Moves states from a view's watch into a LiveView. The memory host calls `pump` with no lock
 /// held, from whichever thread committed the change.
 struct Pump<V: Apply> {
     watch: Mutex<Watch<V>>,
-    target: Arc<Shared<Option<V::State>>>,
+    target: Arc<Shared<Read<V>>>,
     /// Set by a `pump` that found another one running; that one runs again for it.
     requested: AtomicBool,
+    key: V::Key,
+    actor: Option<CurrentActor>,
+    /// `validate` refused the reader, so nothing more is published.
+    ended: AtomicBool,
 }
 
-impl<V: Apply> Pump<V> {
+impl<V: Apply + Validate> Pump<V> {
     fn pump(&self) {
         self.requested.store(true, Ordering::SeqCst);
         loop {
@@ -293,13 +492,53 @@ impl<V: Apply> Pump<V> {
             while let Some(snapshot) = watch.try_next() {
                 latest = Some(snapshot.state);
             }
-            if let Some(state) = latest {
-                self.target.publish(state);
+            if let Some(state) = latest
+                && !self.ended.load(Ordering::SeqCst)
+            {
+                let read = checked::<V>(&self.actor, &self.key, state);
+                self.ended.store(read.is_err(), Ordering::SeqCst);
+                self.target.publish(read);
             }
             drop(watch);
             if !self.requested.load(Ordering::SeqCst) {
                 return;
             }
+        }
+    }
+}
+
+/// Moves frames from a view's feed into the caller's, validating each entry.
+struct FeedRelay<V: Apply> {
+    feed: domain_memory::Feed<V>,
+    /// Held while pumping, so frames go out in the order they were recorded.
+    order: Mutex<()>,
+    out: Mutex<Option<Publisher<Frame<V>>>>,
+    key: V::Key,
+    actor: Option<CurrentActor>,
+    ended: AtomicBool,
+}
+
+impl<V: Apply + Validate> FeedRelay<V> {
+    fn pump(&self) {
+        let _order = lock(&self.order);
+        let out = lock(&self.out).clone();
+        let Some(out) = out else { return };
+        for frame in self.feed.drain() {
+            if self.ended.load(Ordering::SeqCst) {
+                return;
+            }
+            let frame = match frame {
+                Frame::Entry(entry) => match validate::<V>(self.actor.as_ref(), &self.key, Some(&entry.state)) {
+                    Ok(()) => Frame::Entry(entry),
+                    Err(ReadError::Rejected(r)) => {
+                        self.ended.store(true, Ordering::SeqCst);
+                        Frame::Rejected(r)
+                    }
+                    Err(_) => continue,
+                },
+                other => other,
+            };
+            out.push(frame);
         }
     }
 }

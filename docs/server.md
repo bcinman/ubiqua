@@ -33,10 +33,10 @@ cargo run -p bank -- join ws://127.0.0.1:7878/ sam      # in two terminals
 
 ```text
 first sam                                          second sam
-redraw #5: Ok(Some(Summary { .., balance: 70 }))
+redraw #6: Ok(Some(Summary { .., balance: 20 }))
 watching; press Ctrl-C to stop
                                                    withdraw 900: rejected: Frozen
-redraw #6: Ok(Some(Summary { .., balance: 1070 })) ◀── deposited 1000
+redraw #7: Ok(Some(Summary { .., balance: 1020 })) ◀── deposited 1000
 ```
 
 ## Sign connections in
